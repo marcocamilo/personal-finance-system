@@ -177,7 +177,7 @@ def update_transactions_table(month, category, search, show_quorum):
         year, mon = month.split("-")
         first_day = f"{year}-{mon}-01"
         last_day = f"{year}-{mon}-{calendar.monthrange(int(year), int(mon))[1]}"
-        query += " AND date BETWEEN ? AND ?"
+        query += " AND date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)"
         params.extend([first_day, last_day])
 
     if category and category != "all":

@@ -3,13 +3,15 @@ Dashboard Home Page
 Overview of finances for current month
 """
 
-import dash
-from dash import html, dcc
-import dash_bootstrap_components as dbc
-import plotly.graph_objects as go
-import plotly.express as px
-from datetime import datetime
 import calendar
+from datetime import datetime
+
+import dash
+import dash_bootstrap_components as dbc
+import plotly.express as px
+import plotly.graph_objects as go
+from dash import dcc, html
+
 from database.db import db
 
 dash.register_page(__name__, path="/", title="Dashboard")
@@ -24,7 +26,7 @@ def get_month_summary(year: int, month: int):
         """
         SELECT COALESCE(SUM(amount_usd), 0)
         FROM transactions
-        WHERE date BETWEEN ? AND ?
+        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
           AND is_quorum = FALSE
     """,
         (first_day, last_day),
@@ -34,7 +36,7 @@ def get_month_summary(year: int, month: int):
         """
         SELECT COALESCE(SUM(amount_usd), 0)
         FROM transactions
-        WHERE date BETWEEN ? AND ?
+        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
           AND is_quorum = TRUE
     """,
         (first_day, last_day),
@@ -44,7 +46,7 @@ def get_month_summary(year: int, month: int):
         """
         SELECT COALESCE(SUM(amount_eur), 0)
         FROM transactions
-        WHERE date BETWEEN ? AND ?
+        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
           AND is_quorum = FALSE
     """,
         (first_day, last_day),
@@ -57,7 +59,7 @@ def get_month_summary(year: int, month: int):
             ROUND(SUM(amount_eur), 2) as total_eur,
             COUNT(*) as transaction_count
         FROM transactions
-        WHERE date BETWEEN ? AND ?
+        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
           AND is_quorum = FALSE
         GROUP BY category
         ORDER BY total_eur DESC
@@ -358,10 +360,24 @@ def layout():
 
 def create_category_pie_chart(df):
     """Create pie chart for category breakdown"""
-    if df.empty:
-        return go.Figure().add_annotation(
-            text="No data available", showarrow=False, font=dict(size=16)
+    if df is None or df.empty or len(df) == 0:
+        fig = go.Figure()
+        fig.add_annotation(
+            text="No transactions this month",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+            font=dict(size=16, color="gray"),
         )
+        fig.update_layout(
+            height=350,
+            margin=dict(t=20, b=20, l=20, r=20),
+            xaxis=dict(visible=False),
+            yaxis=dict(visible=False),
+        )
+        return fig
 
     fig = px.pie(df, values="total_eur", names="category", title="", hole=0.4)
 
