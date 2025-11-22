@@ -49,6 +49,26 @@ class Database:
             return conn.execute(query, params)
         return conn.execute(query)
 
+    def write_execute(self, query: str, params: tuple = None):
+        """
+        Execute a write query with a fresh connection
+
+        This method closes any existing connection and creates a new write connection.
+        Use this for INSERT, UPDATE, DELETE operations in web contexts.
+        """
+        self.close()
+
+        conn = duckdb.connect(self.db_path, read_only=False)
+
+        try:
+            if params:
+                result = conn.execute(query, params)
+            else:
+                result = conn.execute(query)
+            return result
+        finally:
+            conn.close()
+
     def fetch_df(self, query: str, params: tuple = None) -> pd.DataFrame:
         """Execute query and return as DataFrame (read-only)"""
         result = self.execute(query, params, read_only=True)

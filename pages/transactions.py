@@ -450,7 +450,7 @@ def save_transaction_edit(save_clicks, cancel_clicks, uuid, subcategory):
         if category_info:
             category, budget_type = category_info[0]
 
-            db.execute(
+            db.write_execute(
                 """
                 UPDATE transactions
                 SET subcategory = ?,

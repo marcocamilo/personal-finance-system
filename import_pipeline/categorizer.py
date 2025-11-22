@@ -248,7 +248,7 @@ class Categorizer:
 
             now = datetime.now().isoformat()
 
-            db.execute(
+            db.write_execute(
                 """
                 INSERT INTO merchant_mapping (merchant_pattern, subcategory, confidence, last_used)
                 VALUES (?, ?, ?, ?)

@@ -249,7 +249,6 @@ class TransactionImporter:
         print("STEP 6: IMPORT TO DATABASE")
         print("=" * 60)
 
-        conn = db.connect()
         inserted = 0
         skipped = 0
         errors = []
@@ -264,7 +263,7 @@ class TransactionImporter:
                     skipped += 1
                     continue
 
-                conn.execute(
+                db.write_execute(
                     """
                     INSERT INTO transactions (
                         uuid, date, description, original_amount, original_currency,
@@ -317,7 +316,8 @@ class TransactionImporter:
             print(f"   ⏭️  Skipped: {skipped}")
         if errors:
             print(f"   ❌ Errors: {len(errors)}")
-            for err in errors[:5]:  print(f"      - {err['transaction']}: {err['error']}")
+            for err in errors[:5]:
+                print(f"      - {err['transaction']}: {err['error']}")
 
         if inserted > 0:
             self._update_quorum_totals()
@@ -339,11 +339,10 @@ class TransactionImporter:
         """
 
         results = db.fetch_all(query)
-        conn = db.connect()
 
         for year, month, total_usd in results:
             try:
-                conn.execute(
+                db.write_execute(
                     """
                     INSERT INTO reimbursements (year, month, total_quorum_usd)
                     VALUES (?, ?, ?)
