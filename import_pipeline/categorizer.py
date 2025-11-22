@@ -244,16 +244,20 @@ class Categorizer:
     def _save_pattern(self, pattern: str, subcategory: str, confidence: int):
         """Save pattern to database"""
         try:
+            from datetime import datetime
+
+            now = datetime.now().isoformat()
+
             db.execute(
                 """
                 INSERT INTO merchant_mapping (merchant_pattern, subcategory, confidence, last_used)
-                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?)
                 ON CONFLICT (merchant_pattern) DO UPDATE 
                 SET subcategory = EXCLUDED.subcategory,
                     confidence = EXCLUDED.confidence,
-                    last_used = CURRENT_TIMESTAMP
+                    last_used = EXCLUDED.last_used
             """,
-                (pattern, subcategory, confidence),
+                (pattern, subcategory, confidence, now),
             )
         except Exception as e:
             print(f"⚠️  Could not save pattern: {e}")
