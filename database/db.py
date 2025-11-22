@@ -15,13 +15,24 @@ class Database:
     def __init__(self, db_path: str = "data/finance.db"):
         self.db_path = db_path
         self._connection: Optional[duckdb.DuckDBPyConnection] = None
+        self._read_only: bool = False
 
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    def connect(self) -> duckdb.DuckDBPyConnection:
-        """Get or create database connection"""
+    def connect(self, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+        """
+        Get or create database connection
+
+        Args:
+            read_only: If True, open in read-only mode (prevents lock conflicts)
+        """
+        if self._connection is not None and self._read_only != read_only:
+            self.close()
+
         if self._connection is None:
-            self._connection = duckdb.connect(self.db_path)
+            self._connection = duckdb.connect(self.db_path, read_only=read_only)
+            self._read_only = read_only
+
         return self._connection
 
     def close(self):
@@ -29,32 +40,33 @@ class Database:
         if self._connection:
             self._connection.close()
             self._connection = None
+            self._read_only = False
 
-    def execute(self, query: str, params: tuple = None):
+    def execute(self, query: str, params: tuple = None, read_only: bool = False):
         """Execute a query"""
-        conn = self.connect()
+        conn = self.connect(read_only=read_only)
         if params:
             return conn.execute(query, params)
         return conn.execute(query)
 
     def fetch_df(self, query: str, params: tuple = None) -> pd.DataFrame:
-        """Execute query and return as DataFrame"""
-        result = self.execute(query, params)
+        """Execute query and return as DataFrame (read-only)"""
+        result = self.execute(query, params, read_only=True)
         return result.df()
 
     def fetch_one(self, query: str, params: tuple = None):
-        """Execute query and return single row"""
-        result = self.execute(query, params)
+        """Execute query and return single row (read-only)"""
+        result = self.execute(query, params, read_only=True)
         return result.fetchone()
 
     def fetch_all(self, query: str, params: tuple = None):
-        """Execute query and return all rows"""
-        result = self.execute(query, params)
+        """Execute query and return all rows (read-only)"""
+        result = self.execute(query, params, read_only=True)
         return result.fetchall()
 
     def insert_df(self, table: str, df: pd.DataFrame):
-        """Insert DataFrame into table"""
-        conn = self.connect()
+        """Insert DataFrame into table (write mode)"""
+        conn = self.connect(read_only=False)
         conn.execute(f"INSERT INTO {table} SELECT * FROM df")
 
     def __enter__(self):
