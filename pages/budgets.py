@@ -8,7 +8,7 @@ from datetime import datetime
 
 import dash
 import dash_bootstrap_components as dbc
-from dash import ALL, Input, Output, State, callback, ctx, dcc, html
+from dash import Input, Output, State, callback, dcc, html
 from dash.exceptions import PreventUpdate
 
 from database.db import db
@@ -21,9 +21,11 @@ def get_current_budget(year: int, month: int):
 
     existing = db.fetch_df(
         """
-        SELECT budget_type, category, subcategory, budgeted_amount, template_id
+        SELECT budget_type, category, SUM(budgeted_amount) as budgeted_amount, 
+               MAX(template_id) as template_id
         FROM monthly_budgets
         WHERE year = ? AND month = ?
+        GROUP BY budget_type, category
         ORDER BY 
             CASE budget_type
                 WHEN 'Income' THEN 1
@@ -34,7 +36,7 @@ def get_current_budget(year: int, month: int):
                 WHEN 'Unexpected' THEN 6
                 ELSE 7
             END,
-            category, subcategory
+            category
     """,
         (year, month),
     )
@@ -46,9 +48,10 @@ def get_current_budget(year: int, month: int):
 
     template_budgets = db.fetch_df(
         """
-        SELECT budget_type, category, subcategory, budgeted_amount
+        SELECT budget_type, category, SUM(budgeted_amount) as budgeted_amount
         FROM template_categories
         WHERE template_id = ?
+        GROUP BY budget_type, category
         ORDER BY 
             CASE budget_type
                 WHEN 'Income' THEN 1
@@ -59,7 +62,7 @@ def get_current_budget(year: int, month: int):
                 WHEN 'Unexpected' THEN 6
                 ELSE 7
             END,
-            category, subcategory
+            category
     """,
         (template_id,),
     )
@@ -70,7 +73,7 @@ def get_current_budget(year: int, month: int):
             INSERT INTO monthly_budgets (
                 year, month, template_id, budget_type, category, 
                 subcategory, budgeted_amount, is_locked
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, 0)
+            ) VALUES (?, ?, ?, ?, ?, NULL, ?, 0)
         """,
             (
                 year,
@@ -78,7 +81,6 @@ def get_current_budget(year: int, month: int):
                 template_id,
                 row["budget_type"],
                 row["category"],
-                row["subcategory"],
                 row["budgeted_amount"],
             ),
         )
@@ -96,14 +98,13 @@ def get_actual_spending(year: int, month: int):
         SELECT 
             budget_type,
             category,
-            subcategory,
             SUM(amount_eur) as actual_amount,
             COUNT(*) as transaction_count
         FROM transactions
         WHERE date BETWEEN ? AND ?
             AND is_quorum = 0
             AND budget_type IS NOT NULL
-        GROUP BY budget_type, category, subcategory
+        GROUP BY budget_type, category
     """,
         (first_day, last_day),
     )
@@ -250,10 +251,8 @@ def layout():
             html.Div(id="budget-details"),
             dcc.Store(id="current-year", data=year),
             dcc.Store(id="current-month", data=month),
-            dcc.Store(id="template-edit-data"),  # ADD THIS LINE
-            html.Div(
-                id="template-items-container", style={"display": "none"}
-            ),  # ADD THIS LINE
+            dcc.Store(id="template-edit-data"),
+            html.Div(id="template-items-container", style={"display": "none"}),
             dbc.Modal(
                 [
                     dbc.ModalHeader("Edit Budget Amount"),
@@ -311,7 +310,7 @@ def update_budget_view(year, month):
 
     merged = budget_df.merge(
         actual_df,
-        on=["budget_type", "category", "subcategory"],
+        on=["budget_type", "category"],
         how="left",
     )
     merged["actual_amount"] = merged["actual_amount"].fillna(0)
@@ -499,7 +498,7 @@ def create_mini_progress_bar(actual, budget):
 
 
 def create_budget_details(df, year, month):
-    """Create detailed budget breakdown with improved layout"""
+    """Create detailed budget breakdown"""
 
     income_savings_types = ["Income", "Savings"]
     expense_types = ["Needs", "Wants", "Additional", "Unexpected"]
@@ -544,20 +543,12 @@ def create_budget_details(df, year, month):
 
 def create_compact_budget_section(type_df, budget_type, year, month):
     """Create compact section for Income/Savings"""
-    total_budget = type_df["budgeted_amount"].sum()
-    total_actual = type_df["actual_amount"].sum()
-
     badge_color = "secondary" if budget_type == "Income" else "success"
 
     rows = []
     for _, row in type_df.iterrows():
         budgeted = row["budgeted_amount"]
         actual = row["actual_amount"]
-
-        if row["subcategory"] and row["subcategory"] != "None":
-            category_display = f"{row['category']} - {row['subcategory']}"
-        else:
-            category_display = row["category"]
 
         rows.append(
             dbc.ListGroupItem(
@@ -566,7 +557,7 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                         [
                             dbc.Col(
                                 [
-                                    html.Div(category_display, className="fw-bold"),
+                                    html.Div(row["category"], className="fw-bold"),
                                     html.Small(
                                         f"€{actual:,.2f} / €{budgeted:,.2f}",
                                         className="text-muted",
@@ -584,7 +575,6 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                             "month": month,
                                             "budget_type": budget_type,
                                             "category": row["category"],
-                                            "subcategory": str(row["subcategory"]),
                                         },
                                         color="primary",
                                         size="sm",
@@ -615,8 +605,6 @@ def create_compact_budget_section(type_df, budget_type, year, month):
 
 def create_detailed_budget_section(type_df, budget_type, year, month):
     """Create detailed section for Expenses"""
-    total_budget = type_df["budgeted_amount"].sum()
-    total_actual = type_df["actual_amount"].sum()
 
     if budget_type == "Needs":
         badge_color = "primary"
@@ -637,15 +625,10 @@ def create_detailed_budget_section(type_df, budget_type, year, month):
 
         progress_color = "success" if percent <= 100 else "danger"
 
-        if row["subcategory"] and row["subcategory"] != "None":
-            category_display = f"{row['category']} - {row['subcategory']}"
-        else:
-            category_display = row["category"]
-
         rows.append(
             html.Tr(
                 [
-                    html.Td(category_display),
+                    html.Td(row["category"]),
                     html.Td(f"€{budgeted:,.2f}", className="text-end"),
                     html.Td(
                         f"€{actual:,.2f}",
@@ -673,7 +656,6 @@ def create_detailed_budget_section(type_df, budget_type, year, month):
                                     "month": month,
                                     "budget_type": budget_type,
                                     "category": row["category"],
-                                    "subcategory": str(row["subcategory"]),
                                 },
                                 color="primary",
                                 size="sm",
@@ -763,9 +745,7 @@ def switch_template(template_id, year, month):
 
     budget_df = get_current_budget(year, month)
     actual_df = get_actual_spending(year, month)
-    merged = budget_df.merge(
-        actual_df, on=["budget_type", "category", "subcategory"], how="left"
-    )
+    merged = budget_df.merge(actual_df, on=["budget_type", "category"], how="left")
     merged["actual_amount"] = merged["actual_amount"].fillna(0)
     merged["transaction_count"] = merged["transaction_count"].fillna(0).astype(int)
 
@@ -818,7 +798,6 @@ def navigate_months(prev_clicks, next_clicks, year, month):
                 "month": dash.ALL,
                 "budget_type": dash.ALL,
                 "category": dash.ALL,
-                "subcategory": dash.ALL,
             },
             "n_clicks",
         )
@@ -831,7 +810,6 @@ def navigate_months(prev_clicks, next_clicks, year, month):
                 "month": dash.ALL,
                 "budget_type": dash.ALL,
                 "category": dash.ALL,
-                "subcategory": dash.ALL,
             },
             "id",
         ),
@@ -854,17 +832,16 @@ def open_edit_modal(n_clicks, btn_ids, is_open):
     month = button_id["month"]
     budget_type = button_id["budget_type"]
     category = button_id["category"]
-    subcategory = button_id["subcategory"]
 
     result = db.fetch_one(
         """
-        SELECT budgeted_amount
+        SELECT SUM(budgeted_amount) as budgeted_amount
         FROM monthly_budgets
         WHERE year = ? AND month = ? 
             AND budget_type = ? AND category = ?
-            AND (subcategory = ? OR (subcategory IS NULL AND ? = 'None'))
+        GROUP BY budget_type, category
     """,
-        (year, month, budget_type, category, subcategory, subcategory),
+        (year, month, budget_type, category),
     )
 
     current_amount = result[0] if result else 0
@@ -900,7 +877,6 @@ def open_edit_modal(n_clicks, btn_ids, is_open):
                 "month": month,
                 "budget_type": budget_type,
                 "category": category,
-                "subcategory": subcategory,
             },
         ),
     ]
@@ -927,20 +903,34 @@ def save_budget_edit(save_clicks, cancel_clicks, amount, data):
     if ctx.triggered_id == "save-budget-edit" and amount is not None:
         db.write_execute(
             """
-            UPDATE monthly_budgets
-            SET budgeted_amount = ?
+            DELETE FROM monthly_budgets
             WHERE year = ? AND month = ? 
                 AND budget_type = ? AND category = ?
-                AND (subcategory = ? OR (subcategory IS NULL AND ? = 'None'))
         """,
             (
-                amount,
                 data["year"],
                 data["month"],
                 data["budget_type"],
                 data["category"],
-                data["subcategory"],
-                data["subcategory"],
+            ),
+        )
+
+        template_id = db.fetch_one(
+            "SELECT id FROM budget_templates WHERE is_active = 1"
+        )[0]
+        db.write_execute(
+            """
+            INSERT INTO monthly_budgets
+            (year, month, template_id, budget_type, category, subcategory, budgeted_amount, is_locked)
+            VALUES (?, ?, ?, ?, ?, NULL, ?, 0)
+        """,
+            (
+                data["year"],
+                data["month"],
+                template_id,
+                data["budget_type"],
+                data["category"],
+                amount,
             ),
         )
 
@@ -959,7 +949,7 @@ def save_budget_edit(save_clicks, cancel_clicks, amount, data):
     ],
     [
         State("edit-template-modal", "is_open"),
-        State({"type": "template-amount", "index": ALL}, "value"),
+        State({"type": "template-amount", "index": dash.ALL}, "value"),
         State("template-edit-data", "data"),
     ],
     prevent_initial_call=True,
@@ -980,9 +970,10 @@ def toggle_template_modal(
 
         template_df = db.fetch_df(
             """
-            SELECT budget_type, category, subcategory, budgeted_amount
+            SELECT budget_type, category, SUM(budgeted_amount) as budgeted_amount
             FROM template_categories
             WHERE template_id = ?
+            GROUP BY budget_type, category
             ORDER BY 
                 CASE budget_type
                     WHEN 'Income' THEN 1
@@ -991,27 +982,26 @@ def toggle_template_modal(
                     WHEN 'Wants' THEN 4
                     ELSE 5
                 END,
-                category, subcategory
+                category
         """,
             (template_id,),
         )
 
         all_categories = db.fetch_df("""
-            SELECT budget_type, category, subcategory
+            SELECT DISTINCT budget_type, category
             FROM categories
             WHERE is_active = 1
-            ORDER BY budget_type, category, subcategory
+            ORDER BY budget_type, category
         """)
 
         current_items = []
         for idx, row in template_df.iterrows():
-            cat_key = f"{row['budget_type']}|{row['category']}|{row['subcategory']}"
+            cat_key = f"{row['budget_type']}|{row['category']}"
             current_items.append(
                 {
                     "key": cat_key,
                     "budget_type": row["budget_type"],
                     "category": row["category"],
-                    "subcategory": row["subcategory"],
                     "amount": row["budgeted_amount"],
                 }
             )
@@ -1027,12 +1017,11 @@ def toggle_template_modal(
         existing_keys = {item["key"] for item in current_items}
         available_options = [
             {
-                "label": f"{row['budget_type']} → {row['category']} → {row['subcategory']}",
-                "value": f"{row['budget_type']}|{row['category']}|{row['subcategory']}",
+                "label": f"{row['budget_type']} → {row['category']}",
+                "value": f"{row['budget_type']}|{row['category']}",
             }
             for _, row in all_categories.iterrows()
-            if f"{row['budget_type']}|{row['category']}|{row['subcategory']}"
-            not in existing_keys
+            if f"{row['budget_type']}|{row['category']}" not in existing_keys
         ]
 
         form = [
@@ -1171,13 +1160,12 @@ def toggle_template_modal(
                         """
                         INSERT INTO template_categories 
                         (template_id, budget_type, category, subcategory, budgeted_amount)
-                        VALUES (?, ?, ?, ?, ?)
+                        VALUES (?, ?, ?, NULL, ?)
                         """,
                         (
                             template_id,
                             item["budget_type"],
                             item["category"],
-                            item["subcategory"],
                             float(amount),
                         ),
                     )
@@ -1190,9 +1178,6 @@ def toggle_template_modal(
 
 def create_template_item_row(item, idx):
     """Create an editable row for a template budget item"""
-    cat_display = f"{item['category']}"
-    if item["subcategory"]:
-        cat_display += f" - {item['subcategory']}"
 
     type_colors = {
         "Income": "secondary",
@@ -1218,7 +1203,7 @@ def create_template_item_row(item, idx):
                                         ),
                                         className="me-2",
                                     ),
-                                    html.Span(cat_display, className="fw-bold"),
+                                    html.Span(item["category"], className="fw-bold"),
                                 ],
                                 width=6,
                             ),
@@ -1292,17 +1277,13 @@ def add_template_item(n_clicks, category, amount, current_data):
         raise PreventUpdate
 
     parts = category.split("|")
-    if len(parts) != 3:
+    if len(parts) != 2:
         raise PreventUpdate
 
-    budget_type, cat, subcat = parts
+    budget_type, cat = parts
 
     for item in current_data["items"]:
-        if (
-            item["budget_type"] == budget_type
-            and item["category"] == cat
-            and item["subcategory"] == subcat
-        ):
+        if item["budget_type"] == budget_type and item["category"] == cat:
             raise PreventUpdate
 
     current_data["items"].append(
@@ -1310,7 +1291,6 @@ def add_template_item(n_clicks, category, amount, current_data):
             "key": category,
             "budget_type": budget_type,
             "category": cat,
-            "subcategory": subcat,
             "amount": float(amount),
         }
     )
@@ -1328,12 +1308,14 @@ def add_template_item(n_clicks, category, amount, current_data):
         Output("template-edit-data", "data", allow_duplicate=True),
         Output("template-items-container", "children", allow_duplicate=True),
     ],
-    [Input({"type": "delete-template-item", "index": ALL}, "n_clicks")],
+    [Input({"type": "delete-template-item", "index": dash.ALL}, "n_clicks")],
     [State("template-edit-data", "data")],
     prevent_initial_call=True,
 )
 def delete_template_item(n_clicks, current_data):
     """Delete category from template"""
+    from dash import ctx
+
     if not any(n_clicks):
         raise PreventUpdate
 
@@ -1371,9 +1353,7 @@ def reset_to_template(n_clicks, year, month):
 
     budget_df = get_current_budget(year, month)
     actual_df = get_actual_spending(year, month)
-    merged = budget_df.merge(
-        actual_df, on=["budget_type", "category", "subcategory"], how="left"
-    )
+    merged = budget_df.merge(actual_df, on=["budget_type", "category"], how="left")
     merged["actual_amount"] = merged["actual_amount"].fillna(0)
     merged["transaction_count"] = merged["transaction_count"].fillna(0).astype(int)
 
