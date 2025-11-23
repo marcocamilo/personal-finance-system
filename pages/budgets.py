@@ -8,7 +8,7 @@ from datetime import datetime
 
 import dash
 import dash_bootstrap_components as dbc
-from dash import Input, Output, State, callback, dcc, html
+from dash import ALL, Input, Output, State, callback, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
 from database.db import db
@@ -250,6 +250,10 @@ def layout():
             html.Div(id="budget-details"),
             dcc.Store(id="current-year", data=year),
             dcc.Store(id="current-month", data=month),
+            dcc.Store(id="template-edit-data"),  # ADD THIS LINE
+            html.Div(
+                id="template-items-container", style={"display": "none"}
+            ),  # ADD THIS LINE
             dbc.Modal(
                 [
                     dbc.ModalHeader("Edit Budget Amount"),
@@ -953,10 +957,16 @@ def save_budget_edit(save_clicks, cancel_clicks, amount, data):
         Input("cancel-template-edit", "n_clicks"),
         Input("save-template-edit", "n_clicks"),
     ],
-    [State("edit-template-modal", "is_open")],
+    [
+        State("edit-template-modal", "is_open"),
+        State({"type": "template-amount", "index": ALL}, "value"),
+        State("template-edit-data", "data"),
+    ],
     prevent_initial_call=True,
 )
-def toggle_template_modal(edit_click, cancel_click, save_click, is_open):
+def toggle_template_modal(
+    edit_click, cancel_click, save_click, is_open, amounts, template_data
+):
     """Toggle template editing modal"""
     from dash import ctx
 
@@ -986,66 +996,362 @@ def toggle_template_modal(edit_click, cancel_click, save_click, is_open):
             (template_id,),
         )
 
-        rows = []
+        all_categories = db.fetch_df("""
+            SELECT budget_type, category, subcategory
+            FROM categories
+            WHERE is_active = 1
+            ORDER BY budget_type, category, subcategory
+        """)
+
+        current_items = []
         for idx, row in template_df.iterrows():
-            category_display = (
-                f"{row['category']} - {row['subcategory']}"
-                if row["subcategory"]
-                else row["category"]
+            cat_key = f"{row['budget_type']}|{row['category']}|{row['subcategory']}"
+            current_items.append(
+                {
+                    "key": cat_key,
+                    "budget_type": row["budget_type"],
+                    "category": row["category"],
+                    "subcategory": row["subcategory"],
+                    "amount": row["budgeted_amount"],
+                }
             )
-            rows.append(
-                html.Tr(
-                    [
-                        html.Td(row["budget_type"]),
-                        html.Td(category_display),
-                        html.Td(
-                            dbc.Input(
-                                id={"type": "template-amount", "index": idx},
-                                type="number",
-                                step=0.01,
-                                value=row["budgeted_amount"],
-                                size="sm",
-                            ),
-                            className="text-end",
-                        ),
-                    ]
-                )
-            )
+
+        income = template_df[template_df["budget_type"] == "Income"][
+            "budgeted_amount"
+        ].sum()
+        total_allocated = template_df[template_df["budget_type"] != "Income"][
+            "budgeted_amount"
+        ].sum()
+        remaining = income - total_allocated
+
+        existing_keys = {item["key"] for item in current_items}
+        available_options = [
+            {
+                "label": f"{row['budget_type']} → {row['category']} → {row['subcategory']}",
+                "value": f"{row['budget_type']}|{row['category']}|{row['subcategory']}",
+            }
+            for _, row in all_categories.iterrows()
+            if f"{row['budget_type']}|{row['category']}|{row['subcategory']}"
+            not in existing_keys
+        ]
 
         form = [
             html.H5(f"Editing Template: {template_name}", className="mb-3"),
-            html.P(
-                "Changes will apply to future months using this template.",
-                className="text-muted",
-            ),
-            dbc.Table(
+            dbc.Alert(
                 [
-                    html.Thead(
-                        html.Tr(
-                            [
-                                html.Th("Type"),
-                                html.Th("Category"),
-                                html.Th("Amount (€)", className="text-end"),
-                            ]
-                        )
-                    ),
-                    html.Tbody(rows),
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [html.Strong("Income: "), html.Span(f"€{income:,.2f}")],
+                                width=3,
+                            ),
+                            dbc.Col(
+                                [
+                                    html.Strong("Allocated: "),
+                                    html.Span(f"€{total_allocated:,.2f}"),
+                                ],
+                                width=3,
+                            ),
+                            dbc.Col(
+                                [
+                                    html.Strong("Remaining: "),
+                                    html.Span(
+                                        f"€{remaining:,.2f}",
+                                        className="text-success"
+                                        if abs(remaining) < 0.01
+                                        else "text-danger",
+                                    ),
+                                ],
+                                width=3,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Badge(
+                                        "✓ Zero-Based"
+                                        if abs(remaining) < 0.01
+                                        else "⚠ Not Balanced",
+                                        color="success"
+                                        if abs(remaining) < 0.01
+                                        else "warning",
+                                    )
+                                ],
+                                width=3,
+                                className="text-end",
+                            ),
+                        ]
+                    )
                 ],
-                bordered=True,
-                hover=True,
-                size="sm",
-                style={"maxHeight": "500px", "overflowY": "auto"},
+                color="success" if abs(remaining) < 0.01 else "warning",
+                className="mb-3",
             ),
-            dcc.Store(id="template-data", data=template_df.to_dict("records")),
+            html.Div(
+                [
+                    html.H6("Budget Items", className="mb-3"),
+                    html.Div(
+                        id="template-items-container",
+                        children=[
+                            create_template_item_row(item, idx)
+                            for idx, item in enumerate(current_items)
+                        ],
+                    ),
+                ],
+                className="mb-4",
+                style={"maxHeight": "400px", "overflowY": "auto"},
+            ),
+            dbc.Card(
+                [
+                    dbc.CardBody(
+                        [
+                            html.H6("Add Category", className="mb-3"),
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            dcc.Dropdown(
+                                                id="new-template-category",
+                                                options=available_options,
+                                                placeholder="Select category to add...",
+                                                value=None,
+                                            )
+                                        ],
+                                        width=7,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            dbc.Input(
+                                                id="new-template-amount",
+                                                type="number",
+                                                step=0.01,
+                                                placeholder="Amount (€)",
+                                                size="sm",
+                                                value=None,
+                                            )
+                                        ],
+                                        width=4,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            dbc.Button(
+                                                html.I(className="bi bi-plus-circle"),
+                                                id="add-template-item-btn",
+                                                color="success",
+                                                size="sm",
+                                                className="w-100",
+                                            )
+                                        ],
+                                        width=1,
+                                    ),
+                                ]
+                            ),
+                        ]
+                    )
+                ],
+                className="mb-3",
+            ),
+            dcc.Store(
+                id="template-edit-data",
+                data={"template_id": template_id, "items": current_items},
+            ),
         ]
 
         return True, form
 
     elif ctx.triggered_id == "save-template-edit":
+        if template_data and amounts:
+            template_id = template_data["template_id"]
+
+            db.write_execute(
+                "DELETE FROM template_categories WHERE template_id = ?", (template_id,)
+            )
+
+            for i, amount in enumerate(amounts):
+                if amount and amount > 0 and i < len(template_data["items"]):
+                    item = template_data["items"][i]
+                    db.write_execute(
+                        """
+                        INSERT INTO template_categories 
+                        (template_id, budget_type, category, subcategory, budgeted_amount)
+                        VALUES (?, ?, ?, ?, ?)
+                        """,
+                        (
+                            template_id,
+                            item["budget_type"],
+                            item["category"],
+                            item["subcategory"],
+                            float(amount),
+                        ),
+                    )
+
         return False, []
 
     else:
         return False, []
+
+
+def create_template_item_row(item, idx):
+    """Create an editable row for a template budget item"""
+    cat_display = f"{item['category']}"
+    if item["subcategory"]:
+        cat_display += f" - {item['subcategory']}"
+
+    type_colors = {
+        "Income": "secondary",
+        "Savings": "success",
+        "Needs": "primary",
+        "Wants": "info",
+        "Unexpected": "warning",
+        "Additional": "dark",
+    }
+
+    return dbc.Card(
+        [
+            dbc.CardBody(
+                [
+                    dbc.Row(
+                        [
+                            dbc.Col(
+                                [
+                                    dbc.Badge(
+                                        item["budget_type"],
+                                        color=type_colors.get(
+                                            item["budget_type"], "secondary"
+                                        ),
+                                        className="me-2",
+                                    ),
+                                    html.Span(cat_display, className="fw-bold"),
+                                ],
+                                width=6,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.InputGroup(
+                                        [
+                                            dbc.InputGroupText("€"),
+                                            dbc.Input(
+                                                id={
+                                                    "type": "template-amount",
+                                                    "index": idx,
+                                                },
+                                                type="number",
+                                                step=0.01,
+                                                value=item["amount"],
+                                                size="sm",
+                                            ),
+                                        ],
+                                        size="sm",
+                                    )
+                                ],
+                                width=5,
+                            ),
+                            dbc.Col(
+                                [
+                                    dbc.Button(
+                                        html.I(className="bi bi-trash"),
+                                        id={
+                                            "type": "delete-template-item",
+                                            "index": idx,
+                                        },
+                                        color="danger",
+                                        size="sm",
+                                        outline=True,
+                                        disabled=(item["budget_type"] == "Income"),
+                                    )
+                                ],
+                                width=1,
+                                className="text-end",
+                            ),
+                        ],
+                        align="center",
+                    )
+                ],
+                className="py-2",
+            )
+        ],
+        className="mb-2",
+    )
+
+
+@callback(
+    [
+        Output("template-edit-data", "data"),
+        Output("new-template-category", "value"),
+        Output("new-template-amount", "value"),
+        Output("template-items-container", "children"),
+    ],
+    [Input("add-template-item-btn", "n_clicks")],
+    [
+        State("new-template-category", "value"),
+        State("new-template-amount", "value"),
+        State("template-edit-data", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def add_template_item(n_clicks, category, amount, current_data):
+    """Add new category to template"""
+    if not n_clicks or not category or not amount or amount <= 0:
+        raise PreventUpdate
+
+    parts = category.split("|")
+    if len(parts) != 3:
+        raise PreventUpdate
+
+    budget_type, cat, subcat = parts
+
+    for item in current_data["items"]:
+        if (
+            item["budget_type"] == budget_type
+            and item["category"] == cat
+            and item["subcategory"] == subcat
+        ):
+            raise PreventUpdate
+
+    current_data["items"].append(
+        {
+            "key": category,
+            "budget_type": budget_type,
+            "category": cat,
+            "subcategory": subcat,
+            "amount": float(amount),
+        }
+    )
+
+    items_display = [
+        create_template_item_row(item, idx)
+        for idx, item in enumerate(current_data["items"])
+    ]
+
+    return current_data, None, None, items_display
+
+
+@callback(
+    [
+        Output("template-edit-data", "data", allow_duplicate=True),
+        Output("template-items-container", "children", allow_duplicate=True),
+    ],
+    [Input({"type": "delete-template-item", "index": ALL}, "n_clicks")],
+    [State("template-edit-data", "data")],
+    prevent_initial_call=True,
+)
+def delete_template_item(n_clicks, current_data):
+    """Delete category from template"""
+    if not any(n_clicks):
+        raise PreventUpdate
+
+    button_id = ctx.triggered_id
+    if not button_id:
+        raise PreventUpdate
+
+    idx = button_id["index"]
+
+    if 0 <= idx < len(current_data["items"]):
+        current_data["items"].pop(idx)
+
+    items_display = [
+        create_template_item_row(item, idx)
+        for idx, item in enumerate(current_data["items"])
+    ]
+
+    return current_data, items_display
 
 
 @callback(
