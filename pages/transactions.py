@@ -86,7 +86,20 @@ def layout():
                                 switch=True,
                             ),
                         ],
-                        width=3,
+                        width=2,
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Label(" "),
+                            dbc.Button(
+                                "🔄 Refresh",
+                                id="refresh-btn",
+                                color="secondary",
+                                outline=True,
+                                # className="w-100",
+                            ),
+                        ],
+                        width=1,
                     ),
                 ],
                 className="mb-4",
@@ -152,9 +165,10 @@ def generate_month_options():
         Input("category-filter", "value"),
         Input("search-filter", "value"),
         Input("show-quorum", "value"),
+        Input("refresh-btn", "n_clicks"),
     ],
 )
-def update_transactions_table(month, category, search, show_quorum):
+def update_transactions_table(month, category, search, show_quorum, n_clicks):
     """Update transactions table based on filters"""
 
     query = """
