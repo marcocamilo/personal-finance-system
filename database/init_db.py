@@ -1,5 +1,5 @@
 """
-Database initialization and seed data
+Database initialization and seed data (SQLite)
 """
 
 from database.db import db
@@ -11,7 +11,8 @@ def init_database():
     print("🔧 Initializing database...")
 
     conn = db.connect()
-    conn.execute(SCHEMA)
+    conn.executescript(SCHEMA)
+    conn.commit()
 
     print("✅ Database schema created")
 
@@ -71,10 +72,11 @@ def seed_categories():
         conn.execute(
             """
             INSERT OR IGNORE INTO categories (budget_type, category, subcategory, is_active)
-            VALUES (?, ?, ?, TRUE)
+            VALUES (?, ?, ?, 1)
         """,
             (budget_type, category, subcategory),
         )
+    conn.commit()
 
     print(f"✅ Seeded {len(categories_data)} categories")
 
@@ -85,7 +87,7 @@ def seed_budget_templates():
 
     conn = db.connect()
 
-    templates = [("Single", True), ("Couples", False), ("Working Couples", False)]
+    templates = [("Single", 1), ("Couples", 0), ("Working Couples", 0)]
 
     for name, is_active in templates:
         conn.execute(
@@ -95,6 +97,7 @@ def seed_budget_templates():
         """,
             (name, is_active),
         )
+    conn.commit()
 
     single_id = conn.execute(
         "SELECT id FROM budget_templates WHERE name = 'Single'"
@@ -176,6 +179,7 @@ def seed_budget_templates():
             (working_id, budget_type, category, subcategory, amount),
         )
 
+    conn.commit()
     print("✅ Seeded 3 budget templates")
 
 
@@ -199,6 +203,7 @@ def seed_app_config():
         """,
             (key, value),
         )
+    conn.commit()
 
     print("✅ Seeded app configuration")
 

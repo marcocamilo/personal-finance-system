@@ -1,5 +1,5 @@
 """
-Import Page
+Import Page (SQLite)
 Upload CSV files, preview transactions, and import to database
 """
 

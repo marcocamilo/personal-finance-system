@@ -1,5 +1,5 @@
 """
-Transaction import orchestrator
+Transaction import orchestrator (SQLite)
 Handles the complete import workflow: CSV → Process → Categorize → Review → Import
 """
 
@@ -294,7 +294,7 @@ class TransactionImporter:
                         str(row["CARD_NUMBER"])
                         if pd.notna(row["CARD_NUMBER"])
                         else None,
-                        bool(row["IS_QUORUM"]),
+                        1 if bool(row["IS_QUORUM"]) else 0,
                         None,
                     ),
                 )
@@ -330,11 +330,11 @@ class TransactionImporter:
 
         query = """
             SELECT 
-                EXTRACT(YEAR FROM date) as year,
-                EXTRACT(MONTH FROM date) as month,
+                CAST(strftime('%Y', date) AS INTEGER) as year,
+                CAST(strftime('%m', date) AS INTEGER) as month,
                 SUM(amount_usd) as total_usd
             FROM transactions
-            WHERE is_quorum = TRUE
+            WHERE is_quorum = 1
             GROUP BY year, month
         """
 
@@ -347,7 +347,7 @@ class TransactionImporter:
                     INSERT INTO reimbursements (year, month, total_quorum_usd)
                     VALUES (?, ?, ?)
                     ON CONFLICT (year, month) DO UPDATE 
-                    SET total_quorum_usd = EXCLUDED.total_quorum_usd
+                    SET total_quorum_usd = excluded.total_quorum_usd
                 """,
                     (int(year), int(month), float(total_usd)),
                 )
@@ -412,20 +412,3 @@ class TransactionImporter:
             "skipped": skipped + len(duplicates),
             "errors": errors,
         }
-
-
-if __name__ == "__main__":
-    import sys
-
-    if len(sys.argv) < 2:
-        print("Usage: python import_transactions.py <csv_file1> [csv_file2] ...")
-        sys.exit(1)
-
-    importer = TransactionImporter()
-    result = importer.run_full_import(sys.argv[1:])
-
-    print("\n📊 Final Summary:")
-    print(f"   Imported: {result['imported']}")
-    print(f"   Skipped: {result['skipped']}")
-    if result.get("errors"):
-        print(f"   Errors: {len(result['errors'])}")

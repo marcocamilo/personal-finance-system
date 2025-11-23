@@ -1,37 +1,39 @@
 """
-DuckDB database connection and query manager
+SQLite database connection and query manager
 """
 
+import sqlite3
 from pathlib import Path
 from typing import Optional
 
-import duckdb
 import pandas as pd
 
 
 class Database:
-    """Database connection manager for DuckDB"""
+    """Database connection manager for SQLite"""
 
     def __init__(self, db_path: str = "data/finance.db"):
         self.db_path = db_path
-        self._connection: Optional[duckdb.DuckDBPyConnection] = None
-        self._read_only: bool = False
+        self._connection: Optional[sqlite3.Connection] = None
 
         Path(db_path).parent.mkdir(parents=True, exist_ok=True)
 
-    def connect(self, read_only: bool = False) -> duckdb.DuckDBPyConnection:
+    def connect(self) -> sqlite3.Connection:
         """
-        Get or create database connection
-
-        Args:
-            read_only: If True, open in read-only mode (prevents lock conflicts)
+        Get or create database connection with optimizations for concurrent access
         """
-        if self._connection is not None and self._read_only != read_only:
-            self.close()
-
         if self._connection is None:
-            self._connection = duckdb.connect(self.db_path, read_only=read_only)
-            self._read_only = read_only
+            self._connection = sqlite3.connect(
+                self.db_path,
+                check_same_thread=False,
+                timeout=30.0,
+            )
+
+            self._connection.execute("PRAGMA journal_mode=WAL")
+
+            self._connection.execute("PRAGMA foreign_keys=ON")
+
+            self._connection.row_factory = sqlite3.Row
 
         return self._connection
 
@@ -40,54 +42,53 @@ class Database:
         if self._connection:
             self._connection.close()
             self._connection = None
-            self._read_only = False
 
-    def execute(self, query: str, params: tuple = None, read_only: bool = False):
+    def execute(self, query: str, params: tuple = None):
         """Execute a query"""
-        conn = self.connect(read_only=read_only)
+        conn = self.connect()
         if params:
             return conn.execute(query, params)
         return conn.execute(query)
 
     def write_execute(self, query: str, params: tuple = None):
         """
-        Execute a write query with a fresh connection
+        Execute a write query and commit
 
-        This method closes any existing connection and creates a new write connection.
-        Use this for INSERT, UPDATE, DELETE operations in web contexts.
+        Use this for INSERT, UPDATE, DELETE operations.
         """
-        self.close()
-
-        conn = duckdb.connect(self.db_path, read_only=False)
-
+        conn = self.connect()
         try:
             if params:
-                result = conn.execute(query, params)
+                cursor = conn.execute(query, params)
             else:
-                result = conn.execute(query)
-            return result
-        finally:
-            conn.close()
+                cursor = conn.execute(query)
+            conn.commit()
+            return cursor
+        except Exception as e:
+            conn.rollback()
+            raise e
 
     def fetch_df(self, query: str, params: tuple = None) -> pd.DataFrame:
-        """Execute query and return as DataFrame (read-only)"""
-        result = self.execute(query, params, read_only=True)
-        return result.df()
+        """Execute query and return as DataFrame"""
+        conn = self.connect()
+        return pd.read_sql_query(query, conn, params=params)
 
     def fetch_one(self, query: str, params: tuple = None):
-        """Execute query and return single row (read-only)"""
-        result = self.execute(query, params, read_only=True)
-        return result.fetchone()
+        """Execute query and return single row"""
+        result = self.execute(query, params)
+        row = result.fetchone()
+        return row if row is None else tuple(row)
 
     def fetch_all(self, query: str, params: tuple = None):
-        """Execute query and return all rows (read-only)"""
-        result = self.execute(query, params, read_only=True)
-        return result.fetchall()
+        """Execute query and return all rows"""
+        result = self.execute(query, params)
+        return [tuple(row) for row in result.fetchall()]
 
     def insert_df(self, table: str, df: pd.DataFrame):
-        """Insert DataFrame into table (write mode)"""
-        conn = self.connect(read_only=False)
-        conn.execute(f"INSERT INTO {table} SELECT * FROM df")
+        """Insert DataFrame into table"""
+        conn = self.connect()
+        df.to_sql(table, conn, if_exists="append", index=False)
+        conn.commit()
 
     def __enter__(self):
         """Context manager entry"""
@@ -95,6 +96,10 @@ class Database:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         """Context manager exit"""
+        if exc_type is None:
+            self._connection.commit()
+        else:
+            self._connection.rollback()
         self.close()
 
 

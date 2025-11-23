@@ -1,5 +1,5 @@
 """
-Transactions Page
+Transactions Page (SQLite)
 View, filter, and manage all transactions
 """
 
@@ -177,7 +177,7 @@ def update_transactions_table(month, category, search, show_quorum):
         year, mon = month.split("-")
         first_day = f"{year}-{mon}-01"
         last_day = f"{year}-{mon}-{calendar.monthrange(int(year), int(mon))[1]}"
-        query += " AND date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)"
+        query += " AND date BETWEEN ? AND ?"
         params.extend([first_day, last_day])
 
     if category and category != "all":
@@ -189,7 +189,7 @@ def update_transactions_table(month, category, search, show_quorum):
         params.append(f"%{search.lower()}%")
 
     if "show" not in show_quorum:
-        query += " AND is_quorum = FALSE"
+        query += " AND is_quorum = 0"
 
     query += " ORDER BY date DESC LIMIT 500"
 

@@ -16,7 +16,8 @@ app = Dash(
     suppress_callback_exceptions=True,
     title="Finance Tracker",
     update_title="Loading...",
-    use_pages=True,  )
+    use_pages=True,
+)
 
 server = app.server
 
@@ -95,4 +96,4 @@ app.layout = dbc.Container(
 
 
 if __name__ == "__main__":
-    app.run_server(debug=True, port=8050)
+    app.run_server(debug=True, port=8080)

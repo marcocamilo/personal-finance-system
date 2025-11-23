@@ -1,5 +1,5 @@
 """
-Dashboard Home Page
+Dashboard Home Page (SQLite)
 Overview of finances for current month
 """
 
@@ -26,8 +26,8 @@ def get_month_summary(year: int, month: int):
         """
         SELECT COALESCE(SUM(amount_usd), 0)
         FROM transactions
-        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
-          AND is_quorum = FALSE
+        WHERE date BETWEEN ? AND ?
+          AND is_quorum = 0
     """,
         (first_day, last_day),
     )[0][0]
@@ -36,8 +36,8 @@ def get_month_summary(year: int, month: int):
         """
         SELECT COALESCE(SUM(amount_usd), 0)
         FROM transactions
-        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
-          AND is_quorum = TRUE
+        WHERE date BETWEEN ? AND ?
+          AND is_quorum = 1
     """,
         (first_day, last_day),
     )[0][0]
@@ -46,8 +46,8 @@ def get_month_summary(year: int, month: int):
         """
         SELECT COALESCE(SUM(amount_eur), 0)
         FROM transactions
-        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
-          AND is_quorum = FALSE
+        WHERE date BETWEEN ? AND ?
+          AND is_quorum = 0
     """,
         (first_day, last_day),
     )[0][0]
@@ -59,8 +59,8 @@ def get_month_summary(year: int, month: int):
             ROUND(SUM(amount_eur), 2) as total_eur,
             COUNT(*) as transaction_count
         FROM transactions
-        WHERE date BETWEEN CAST(? AS DATE) AND CAST(? AS DATE)
-          AND is_quorum = FALSE
+        WHERE date BETWEEN ? AND ?
+          AND is_quorum = 0
         GROUP BY category
         ORDER BY total_eur DESC
     """,

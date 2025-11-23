@@ -94,9 +94,12 @@ class CSVProcessor:
         df_clean = pd.DataFrame({
             'DATE': df['parsed_date'],
             'DESCRIPTION': df['Description'],
-            'AMOUNT': df['Debit'],  'CARD_NUMBER': df['Card No.'].astype(str).str[-4:],  'IS_QUORUM': df['is_quorum'],
+            'AMOUNT': df['Debit'],
+            'CARD_NUMBER': df['Card No.'].astype(str).str[-4:],
+            'IS_QUORUM': df['is_quorum'],
             'UUID': df['uuid'],
-            'CATEGORY': df['Category'],  })
+            'CATEGORY': df['Category'],
+        })
         
         df_clean = df_clean.sort_values('DATE').reset_index(drop=True)
         
@@ -157,33 +160,3 @@ class CSVProcessor:
         processor.process()
         
         return processor
-
-
-if __name__ == "__main__":
-    import sys
-    
-    if len(sys.argv) < 2:
-        print("Usage: python csv_processor.py <csv_file1> [csv_file2] ...")
-        print("   or: python csv_processor.py <directory>")
-        sys.exit(1)
-    
-    import os
-    if os.path.isdir(sys.argv[1]):
-        processor = CSVProcessor.load_from_directory(sys.argv[1])
-    else:
-        processor = CSVProcessor()
-        processor.load_csv_files(sys.argv[1:])
-        processor.process()
-    
-    summary = processor.get_summary()
-    print("\n" + "=" * 60)
-    print("📊 SUMMARY")
-    print("=" * 60)
-    print(f"Total transactions: {summary['total_transactions']}")
-    print(f"Date range: {summary['date_range'][0]} to {summary['date_range'][1]}")
-    print(f"Your transactions: {summary['your_count']} (${summary['your_amount']:.2f})")
-    print(f"Quorum transactions: {summary['quorum_count']} (${summary['quorum_amount']:.2f})")
-    print(f"Total amount: ${summary['total_amount']:.2f}")
-    
-    output_file = "processed_transactions.csv"
-    processor.export_for_manual_review(output_file)

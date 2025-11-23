@@ -54,7 +54,7 @@ class Categorizer:
                 FROM transactions
                 WHERE subcategory IS NOT NULL 
                   AND subcategory != ''
-                  AND is_quorum = FALSE
+                  AND is_quorum = 0
                 GROUP BY description, subcategory
                 HAVING COUNT(*) >= 2
                 ORDER BY count DESC
@@ -253,9 +253,9 @@ class Categorizer:
                 INSERT INTO merchant_mapping (merchant_pattern, subcategory, confidence, last_used)
                 VALUES (?, ?, ?, ?)
                 ON CONFLICT (merchant_pattern) DO UPDATE 
-                SET subcategory = EXCLUDED.subcategory,
-                    confidence = EXCLUDED.confidence,
-                    last_used = EXCLUDED.last_used
+                SET subcategory = excluded.subcategory,
+                    confidence = excluded.confidence,
+                    last_used = excluded.last_used
             """,
                 (pattern, subcategory, confidence, now),
             )
@@ -279,27 +279,3 @@ class Categorizer:
             return [result]
 
         return []
-
-
-if __name__ == "__main__":
-    categorizer = Categorizer()
-
-    test_descriptions = [
-        "REWE Frank Glawe o",
-        "MCDONALDS 01446",
-        "DB Vertrieb GmbH",
-        "DIRECTV",
-        "Unknown Merchant XYZ",
-    ]
-
-    print("\n" + "=" * 60)
-    print("🧪 TESTING CATEGORIZER")
-    print("=" * 60)
-
-    for desc in test_descriptions:
-        result = categorizer.categorize(desc)
-        print(f"\n{desc}")
-        print(f"   → {result['subcategory'] or 'UNCATEGORIZED'}")
-        print(f"   Category: {result['category']}")
-        print(f"   Confidence: {result['confidence']}%")
-        print(f"   Method: {result['method']}")

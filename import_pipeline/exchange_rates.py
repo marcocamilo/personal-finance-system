@@ -114,7 +114,7 @@ class ExchangeRateFetcher:
         self.cache[date_str] = rate
 
         try:
-            db.execute(
+            db.write_execute(
                 """
                 INSERT OR REPLACE INTO exchange_rates (date, eur_to_usd)
                 VALUES (?, ?)

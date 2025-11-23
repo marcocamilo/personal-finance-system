@@ -1,5 +1,5 @@
 """
-Migrate historical transaction data from CSV to database
+Migrate historical transaction data from CSV to database (SQLite)
 """
 
 import hashlib
@@ -145,7 +145,7 @@ def migrate_historical_data(csv_path: str):
             "category": str(row["category"]),
             "budget_type": str(row["budget_type"]),
             "card_number": None,
-            "is_quorum": bool(row["is_quorum"]),
+            "is_quorum": 1 if bool(row["is_quorum"]) else 0,
             "notes": None,
         }
         transactions.append(transaction)
@@ -200,6 +200,8 @@ def migrate_historical_data(csv_path: str):
     if len(errors) > 5:
         print(f"   ... and {len(errors) - 5} more errors")
 
+    conn.commit()
+
     print(f"✅ Inserted: {inserted}")
     if skipped > 0:
         print(f"⏭️  Skipped (duplicates): {skipped}")
@@ -228,13 +230,14 @@ def get_category_mappings():
 
 def calculate_monthly_quorum_totals():
     """Calculate and store monthly Quorum totals"""
+
     query = """
         SELECT 
-            EXTRACT(YEAR FROM date) as year,
-            EXTRACT(MONTH FROM date) as month,
+            CAST(strftime('%Y', date) AS INTEGER) as year,
+            CAST(strftime('%m', date) AS INTEGER) as month,
             SUM(amount_usd) as total_usd
         FROM transactions
-        WHERE is_quorum = TRUE
+        WHERE is_quorum = 1
         GROUP BY year, month
     """
 
@@ -247,13 +250,14 @@ def calculate_monthly_quorum_totals():
                 """
                 INSERT INTO reimbursements (year, month, total_quorum_usd)
                 VALUES (?, ?, ?)
-                ON CONFLICT (year, month) DO UPDATE SET total_quorum_usd = EXCLUDED.total_quorum_usd
+                ON CONFLICT (year, month) DO UPDATE SET total_quorum_usd = excluded.total_quorum_usd
             """,
                 (int(year), int(month), float(total_usd)),
             )
         except Exception as e:
             print(f"Warning: Could not insert reimbursement for {year}-{month}: {e}")
 
+    conn.commit()
     print(f"✅ Stored {len(results)} monthly Quorum totals")
 
 
@@ -268,9 +272,9 @@ def print_summary_stats():
 
     totals = conn.execute("""
         SELECT 
-            SUM(CASE WHEN is_quorum = FALSE THEN amount_eur ELSE 0 END) as total_eur,
+            SUM(CASE WHEN is_quorum = 0 THEN amount_eur ELSE 0 END) as total_eur,
             SUM(amount_usd) as total_usd,
-            SUM(CASE WHEN is_quorum = TRUE THEN amount_usd ELSE 0 END) as quorum_usd
+            SUM(CASE WHEN is_quorum = 1 THEN amount_usd ELSE 0 END) as quorum_usd
         FROM transactions
     """).fetchone()
 
@@ -288,7 +292,7 @@ if __name__ == "__main__":
     import sys
 
     if len(sys.argv) < 2:
-        print("Usage: python migrate_historical_fixed.py <path_to_csv>")
+        print("Usage: python migrate_historical.py <path_to_csv>")
         sys.exit(1)
 
     csv_path = sys.argv[1]

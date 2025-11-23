@@ -1,5 +1,5 @@
 """
-Database schema definitions for Finance Tracker
+Database schema definitions for Finance Tracker (SQLite)
 """
 
 SCHEMA = """
@@ -10,11 +10,11 @@ CREATE TABLE IF NOT EXISTS transactions (
     description TEXT NOT NULL,
     
     -- Currency handling
-    original_amount DECIMAL(10,2) NOT NULL,
+    original_amount REAL NOT NULL,
     original_currency TEXT NOT NULL CHECK(original_currency IN ('EUR', 'USD')),
-    amount_eur DECIMAL(10,2),
-    amount_usd DECIMAL(10,2),
-    exchange_rate DECIMAL(10,6),
+    amount_eur REAL,
+    amount_usd REAL,
+    exchange_rate REAL,
     
     -- Categorization
     subcategory TEXT,
@@ -23,7 +23,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     
     -- Metadata
     card_number TEXT,
-    is_quorum BOOLEAN DEFAULT FALSE,
+    is_quorum BOOLEAN DEFAULT 0,
     notes TEXT,
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -31,75 +31,69 @@ CREATE TABLE IF NOT EXISTS transactions (
 );
 
 -- Category definitions
-CREATE SEQUENCE IF NOT EXISTS seq_categories;
 CREATE TABLE IF NOT EXISTS categories (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_categories'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     budget_type TEXT NOT NULL,
     category TEXT NOT NULL,
     subcategory TEXT,
-    is_active BOOLEAN DEFAULT TRUE,
+    is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(budget_type, category, subcategory)
 );
 
 -- Budget templates (Single, Couples, Working Couples)
-CREATE SEQUENCE IF NOT EXISTS seq_budget_templates;
 CREATE TABLE IF NOT EXISTS budget_templates (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_budget_templates'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL UNIQUE,
-    is_active BOOLEAN DEFAULT TRUE,
+    is_active BOOLEAN DEFAULT 1,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Template category budgets
-CREATE SEQUENCE IF NOT EXISTS seq_template_categories;
 CREATE TABLE IF NOT EXISTS template_categories (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_template_categories'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     template_id INTEGER NOT NULL,
     budget_type TEXT NOT NULL,
     category TEXT NOT NULL,
     subcategory TEXT,
-    budgeted_amount DECIMAL(10,2) NOT NULL,
+    budgeted_amount REAL NOT NULL,
     FOREIGN KEY(template_id) REFERENCES budget_templates(id)
 );
 
 -- Monthly budget actuals (locked after month ends)
-CREATE SEQUENCE IF NOT EXISTS seq_monthly_budgets;
 CREATE TABLE IF NOT EXISTS monthly_budgets (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_monthly_budgets'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     year INTEGER NOT NULL,
     month INTEGER NOT NULL,
     template_id INTEGER NOT NULL,
     budget_type TEXT NOT NULL,
     category TEXT NOT NULL,
     subcategory TEXT,
-    budgeted_amount DECIMAL(10,2) NOT NULL,
-    is_locked BOOLEAN DEFAULT FALSE,
+    budgeted_amount REAL NOT NULL,
+    is_locked BOOLEAN DEFAULT 0,
     notes TEXT,
     FOREIGN KEY(template_id) REFERENCES budget_templates(id),
     UNIQUE(year, month, budget_type, category, subcategory)
 );
 
 -- Savings buckets
-CREATE SEQUENCE IF NOT EXISTS seq_savings_buckets;
 CREATE TABLE IF NOT EXISTS savings_buckets (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_savings_buckets'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     currency TEXT NOT NULL CHECK(currency IN ('EUR', 'USD')),
-    goal_amount DECIMAL(10,2) NOT NULL,
-    start_amount DECIMAL(10,2) DEFAULT 0,
-    is_active BOOLEAN DEFAULT TRUE,
+    goal_amount REAL NOT NULL,
+    start_amount REAL DEFAULT 0,
+    is_active BOOLEAN DEFAULT 1,
     target_date DATE,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Savings transactions (credits/debits to buckets)
-CREATE SEQUENCE IF NOT EXISTS seq_savings_transactions;
 CREATE TABLE IF NOT EXISTS savings_transactions (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_savings_transactions'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     bucket_id INTEGER NOT NULL,
     date DATE NOT NULL,
-    amount DECIMAL(10,2) NOT NULL,
+    amount REAL NOT NULL,
     transaction_type TEXT CHECK(transaction_type IN ('credit', 'debit', 'transfer')),
     description TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -107,25 +101,23 @@ CREATE TABLE IF NOT EXISTS savings_transactions (
 );
 
 -- Income sources (you + future partner)
-CREATE SEQUENCE IF NOT EXISTS seq_income_streams;
 CREATE TABLE IF NOT EXISTS income_streams (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_income_streams'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
-    amount DECIMAL(10,2) NOT NULL,
+    amount REAL NOT NULL,
     frequency TEXT DEFAULT 'monthly',
-    is_active BOOLEAN DEFAULT TRUE,
+    is_active BOOLEAN DEFAULT 1,
     owner TEXT,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
 -- Quorum reimbursements (monthly totals)
-CREATE SEQUENCE IF NOT EXISTS seq_reimbursements;
 CREATE TABLE IF NOT EXISTS reimbursements (
-    id INTEGER PRIMARY KEY DEFAULT NEXTVAL('seq_reimbursements'),
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
     year INTEGER NOT NULL,
     month INTEGER NOT NULL,
-    total_quorum_usd DECIMAL(10,2) NOT NULL,
-    reimbursed_amount_usd DECIMAL(10,2) DEFAULT 0,
+    total_quorum_usd REAL NOT NULL,
+    reimbursed_amount_usd REAL DEFAULT 0,
     reimbursement_date DATE,
     notes TEXT,
     UNIQUE(year, month)
@@ -149,7 +141,7 @@ CREATE TABLE IF NOT EXISTS app_config (
 -- Exchange rate cache
 CREATE TABLE IF NOT EXISTS exchange_rates (
     date DATE PRIMARY KEY,
-    eur_to_usd DECIMAL(10,6) NOT NULL,
+    eur_to_usd REAL NOT NULL,
     fetched_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
