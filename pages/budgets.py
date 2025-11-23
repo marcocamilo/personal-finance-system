@@ -17,7 +17,8 @@ dash.register_page(__name__, path="/budgets", title="Budgets")
 
 
 def get_current_budget(year: int, month: int):
-    """Get budget for current month, create from template if doesn't exist"""
+    """Get budget for current month, create from template if doesn't exist
+    Shows ALL expense categories, actual Income and Savings only"""
 
     existing = db.fetch_df(
         """
@@ -42,9 +43,65 @@ def get_current_budget(year: int, month: int):
     )
 
     if not existing.empty:
+        expense_cats = db.fetch_df("""
+            SELECT DISTINCT budget_type, category
+            FROM categories
+            WHERE is_active = 1
+            AND budget_type IN ('Needs', 'Wants', 'Unexpected', 'Additional')
+            ORDER BY budget_type, category
+        """)
+
+        template_id = db.fetch_one(
+            "SELECT id FROM budget_templates WHERE is_active = 1"
+        )[0]
+
+        existing_keys = set(zip(existing["budget_type"], existing["category"]))
+        missing = []
+
+        for _, row in expense_cats.iterrows():
+            key = (row["budget_type"], row["category"])
+            if key not in existing_keys:
+                missing.append(
+                    {
+                        "budget_type": row["budget_type"],
+                        "category": row["category"],
+                        "budgeted_amount": 0.0,
+                        "template_id": template_id,
+                    }
+                )
+
+        if missing:
+            import pandas as pd
+
+            missing_df = pd.DataFrame(missing)
+            existing = pd.concat([existing, missing_df], ignore_index=True)
+            existing = existing.sort_values(
+                by=["budget_type", "category"],
+                key=lambda col: col.map(
+                    {
+                        "Income": 1,
+                        "Savings": 2,
+                        "Needs": 3,
+                        "Wants": 4,
+                        "Additional": 5,
+                        "Unexpected": 6,
+                    }
+                )
+                if col.name == "budget_type"
+                else col,
+            )
+
         return existing
 
     template_id = db.fetch_one("SELECT id FROM budget_templates WHERE is_active = 1")[0]
+
+    expense_cats = db.fetch_df("""
+        SELECT DISTINCT budget_type, category
+        FROM categories
+        WHERE is_active = 1
+        AND budget_type IN ('Needs', 'Wants', 'Unexpected', 'Additional')
+        ORDER BY budget_type, category
+    """)
 
     template_budgets = db.fetch_df(
         """
@@ -52,22 +109,24 @@ def get_current_budget(year: int, month: int):
         FROM template_categories
         WHERE template_id = ?
         GROUP BY budget_type, category
-        ORDER BY 
-            CASE budget_type
-                WHEN 'Income' THEN 1
-                WHEN 'Savings' THEN 2
-                WHEN 'Needs' THEN 3
-                WHEN 'Wants' THEN 4
-                WHEN 'Additional' THEN 5
-                WHEN 'Unexpected' THEN 6
-                ELSE 7
-            END,
-            category
     """,
         (template_id,),
     )
 
-    for _, row in template_budgets.iterrows():
+    expense_merged = expense_cats.merge(
+        template_budgets, on=["budget_type", "category"], how="left"
+    )
+    expense_merged["budgeted_amount"] = expense_merged["budgeted_amount"].fillna(0)
+
+    income_savings = template_budgets[
+        template_budgets["budget_type"].isin(["Income", "Savings"])
+    ]
+
+    import pandas as pd
+
+    merged = pd.concat([income_savings, expense_merged], ignore_index=True)
+
+    for _, row in merged.iterrows():
         db.write_execute(
             """
             INSERT INTO monthly_budgets (
@@ -89,7 +148,7 @@ def get_current_budget(year: int, month: int):
 
 
 def get_actual_spending(year: int, month: int):
-    """Get actual spending for the month"""
+    """Get actual spending for the month - AGGREGATED BY CATEGORY"""
     first_day = f"{year}-{month:02d}-01"
     last_day = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]}"
 
@@ -131,9 +190,9 @@ def layout():
                 [
                     dbc.Col(
                         [
-                            html.H2(f"Budget - {month_name} {year}", className="mb-0"),
+                            html.H2(id="budget-page-title", className="mb-0"),
                             html.P(
-                                f"Active Template: {active_template}",
+                                id="budget-active-template",
                                 className="text-muted",
                             ),
                         ],
@@ -299,6 +358,8 @@ def layout():
     [
         Output("budget-summary-cards", "children"),
         Output("budget-details", "children"),
+        Output("budget-page-title", "children"),
+        Output("budget-active-template", "children"),
     ],
     [Input("current-year", "data"), Input("current-month", "data")],
 )
@@ -319,7 +380,15 @@ def update_budget_view(year, month):
     summary = create_summary_cards(merged)
     details = create_budget_details(merged, year, month)
 
-    return summary, details
+    month_name = calendar.month_name[month]
+    title = f"Budget - {month_name} {year}"
+
+    active_template = db.fetch_one(
+        "SELECT name FROM budget_templates WHERE is_active = 1"
+    )[0]
+    template_text = f"Active Template: {active_template}"
+
+    return summary, details, title, template_text
 
 
 def create_summary_cards(df):
@@ -542,7 +611,7 @@ def create_budget_details(df, year, month):
 
 
 def create_compact_budget_section(type_df, budget_type, year, month):
-    """Create compact section for Income/Savings"""
+    """Create compact section for Income/Savings - CATEGORY ONLY"""
     badge_color = "secondary" if budget_type == "Income" else "success"
 
     rows = []
@@ -604,7 +673,7 @@ def create_compact_budget_section(type_df, budget_type, year, month):
 
 
 def create_detailed_budget_section(type_df, budget_type, year, month):
-    """Create detailed section for Expenses"""
+    """Create detailed section for Expenses - CATEGORY ONLY"""
 
     if budget_type == "Needs":
         badge_color = "primary"
@@ -728,6 +797,7 @@ def create_detailed_budget_section(type_df, budget_type, year, month):
     [
         Output("budget-summary-cards", "children", allow_duplicate=True),
         Output("budget-details", "children", allow_duplicate=True),
+        Output("budget-active-template", "children", allow_duplicate=True),
     ],
     [Input("template-selector", "value")],
     [State("current-year", "data"), State("current-month", "data")],
@@ -743,6 +813,10 @@ def switch_template(template_id, year, month):
         "UPDATE budget_templates SET is_active = 1 WHERE id = ?", (template_id,)
     )
 
+    db.write_execute(
+        "DELETE FROM monthly_budgets WHERE year = ? AND month = ?", (year, month)
+    )
+
     budget_df = get_current_budget(year, month)
     actual_df = get_actual_spending(year, month)
     merged = budget_df.merge(actual_df, on=["budget_type", "category"], how="left")
@@ -752,7 +826,12 @@ def switch_template(template_id, year, month):
     summary = create_summary_cards(merged)
     details = create_budget_details(merged, year, month)
 
-    return summary, details
+    active_template = db.fetch_one(
+        "SELECT name FROM budget_templates WHERE is_active = 1"
+    )[0]
+    template_text = f"Active Template: {active_template}"
+
+    return summary, details, template_text
 
 
 @callback(
@@ -1177,7 +1256,7 @@ def toggle_template_modal(
 
 
 def create_template_item_row(item, idx):
-    """Create an editable row for a template budget item"""
+    """Create an editable row for a template budget item - CATEGORY ONLY"""
 
     type_colors = {
         "Income": "secondary",
