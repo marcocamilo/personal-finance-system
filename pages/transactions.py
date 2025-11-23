@@ -194,6 +194,7 @@ def update_transactions_table(month, category, search, show_quorum):
     query += " ORDER BY date DESC LIMIT 500"
 
     df = db.fetch_df(query, tuple(params) if params else None)
+    df["is_quorum"] = df["is_quorum"].astype(int).astype(bool)
 
     stats = create_stats_row(df)
 
