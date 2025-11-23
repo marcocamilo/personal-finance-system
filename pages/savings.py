@@ -16,7 +16,6 @@ dash.register_page(__name__, path="/savings", title="Savings")
 
 
 def get_savings_buckets():
-    """Get all savings buckets with current balances"""
     buckets = db.fetch_df("""
         SELECT 
             sb.id,
@@ -38,26 +37,36 @@ def get_savings_buckets():
         GROUP BY sb.id, sb.name, sb.currency, sb.goal_amount, sb.start_amount, sb.target_date, sb.is_active
         ORDER BY sb.is_active DESC, sb.created_at DESC
     """)
-
     if not buckets.empty:
         buckets["current_amount"] = (
             buckets["start_amount"] + buckets["transactions_total"]
         )
-
     return buckets
 
 
 def layout():
     buckets = get_savings_buckets()
 
-    if not buckets.empty:
-        total_saved_eur = buckets[buckets["currency"] == "EUR"]["current_amount"].sum()
-        total_saved_usd = buckets[buckets["currency"] == "USD"]["current_amount"].sum()
-        total_goal_eur = buckets[buckets["currency"] == "EUR"]["goal_amount"].sum()
-        total_goal_usd = buckets[buckets["currency"] == "USD"]["goal_amount"].sum()
-    else:
-        total_saved_eur = total_saved_usd = 0
-        total_goal_eur = total_goal_usd = 0
+    total_saved_eur = (
+        buckets[buckets["currency"] == "EUR"]["current_amount"].sum()
+        if not buckets.empty
+        else 0
+    )
+    total_saved_usd = (
+        buckets[buckets["currency"] == "USD"]["current_amount"].sum()
+        if not buckets.empty
+        else 0
+    )
+    total_goal_eur = (
+        buckets[buckets["currency"] == "EUR"]["goal_amount"].sum()
+        if not buckets.empty
+        else 0
+    )
+    total_goal_usd = (
+        buckets[buckets["currency"] == "USD"]["goal_amount"].sum()
+        if not buckets.empty
+        else 0
+    )
 
     return dbc.Container(
         [
@@ -73,16 +82,11 @@ def layout():
                         width=8,
                     ),
                     dbc.Col(
-                        [
-                            dbc.Button(
-                                [
-                                    html.I(className="bi bi-plus-circle me-2"),
-                                    "New Goal",
-                                ],
-                                id="new-goal-btn",
-                                color="primary",
-                            )
-                        ],
+                        dbc.Button(
+                            [html.I(className="bi bi-plus-circle me-2"), "New Goal"],
+                            id="new-goal-btn",
+                            color="primary",
+                        ),
                         width=4,
                         className="text-end",
                     ),
@@ -92,116 +96,92 @@ def layout():
             dbc.Row(
                 [
                     dbc.Col(
-                        [
-                            dbc.Card(
+                        dbc.Card(
+                            dbc.CardBody(
                                 [
-                                    dbc.CardBody(
-                                        [
-                                            html.H6(
-                                                "Total Saved (EUR)",
-                                                className="text-muted mb-2",
-                                            ),
-                                            html.H3(
-                                                f"€{total_saved_eur:,.2f}",
-                                                className="mb-0 text-success",
-                                            ),
-                                            html.Small(
-                                                f"Goal: €{total_goal_eur:,.2f}",
-                                                className="text-muted",
-                                            ),
-                                        ]
-                                    )
-                                ],
-                                className="h-100",
-                            )
-                        ],
+                                    html.H6(
+                                        "Total Saved (EUR)", className="text-muted mb-2"
+                                    ),
+                                    html.H3(
+                                        f"€{total_saved_eur:,.2f}",
+                                        className="mb-0 text-success",
+                                    ),
+                                    html.Small(
+                                        f"Goal: €{total_goal_eur:,.2f}",
+                                        className="text-muted",
+                                    ),
+                                ]
+                            ),
+                            className="h-100",
+                        ),
                         width=3,
                     ),
                     dbc.Col(
-                        [
-                            dbc.Card(
+                        dbc.Card(
+                            dbc.CardBody(
                                 [
-                                    dbc.CardBody(
-                                        [
-                                            html.H6(
-                                                "Total Saved (USD)",
-                                                className="text-muted mb-2",
-                                            ),
-                                            html.H3(
-                                                f"${total_saved_usd:,.2f}",
-                                                className="mb-0 text-success",
-                                            ),
-                                            html.Small(
-                                                f"Goal: ${total_goal_usd:,.2f}",
-                                                className="text-muted",
-                                            ),
-                                        ]
-                                    )
-                                ],
-                                className="h-100",
-                            )
-                        ],
+                                    html.H6(
+                                        "Total Saved (USD)", className="text-muted mb-2"
+                                    ),
+                                    html.H3(
+                                        f"${total_saved_usd:,.2f}",
+                                        className="mb-0 text-success",
+                                    ),
+                                    html.Small(
+                                        f"Goal: ${total_goal_usd:,.2f}",
+                                        className="text-muted",
+                                    ),
+                                ]
+                            ),
+                            className="h-100",
+                        ),
                         width=3,
                     ),
                     dbc.Col(
-                        [
-                            dbc.Card(
+                        dbc.Card(
+                            dbc.CardBody(
                                 [
-                                    dbc.CardBody(
-                                        [
-                                            html.H6(
-                                                "Active Goals",
-                                                className="text-muted mb-2",
-                                            ),
-                                            html.H3(
-                                                str(
-                                                    len(
-                                                        buckets[
-                                                            buckets["is_active"] == 1
-                                                        ]
-                                                    )
-                                                    if not buckets.empty
-                                                    else 0
-                                                ),
-                                                className="mb-0",
-                                            ),
-                                        ]
-                                    )
-                                ],
-                                className="h-100",
-                            )
-                        ],
+                                    html.H6(
+                                        "Active Goals", className="text-muted mb-2"
+                                    ),
+                                    html.H3(
+                                        str(
+                                            len(buckets[buckets["is_active"] == 1])
+                                            if not buckets.empty
+                                            else 0
+                                        ),
+                                        className="mb-0",
+                                    ),
+                                ]
+                            ),
+                            className="h-100",
+                        ),
                         width=3,
                     ),
                     dbc.Col(
-                        [
-                            dbc.Card(
+                        dbc.Card(
+                            dbc.CardBody(
                                 [
-                                    dbc.CardBody(
-                                        [
-                                            html.H6(
-                                                "Goals Completed",
-                                                className="text-muted mb-2",
-                                            ),
-                                            html.H3(
-                                                str(
-                                                    len(
-                                                        buckets[
-                                                            buckets["current_amount"]
-                                                            >= buckets["goal_amount"]
-                                                        ]
-                                                    )
-                                                    if not buckets.empty
-                                                    else 0
-                                                ),
-                                                className="mb-0 text-success",
-                                            ),
-                                        ]
-                                    )
-                                ],
-                                className="h-100",
-                            )
-                        ],
+                                    html.H6(
+                                        "Goals Completed", className="text-muted mb-2"
+                                    ),
+                                    html.H3(
+                                        str(
+                                            len(
+                                                buckets[
+                                                    buckets["current_amount"]
+                                                    >= buckets["goal_amount"]
+                                                ]
+                                            )
+                                            if not buckets.empty
+                                            else 0
+                                        ),
+                                        className="mb-0 text-success",
+                                    ),
+                                ]
+                            ),
+                            className="h-100",
+                        ),
                         width=3,
                     ),
                 ],
@@ -349,25 +329,20 @@ def toggle_new_goal_modal(
     trigger = ctx.triggered_id
     if not trigger:
         raise PreventUpdate
-
     if trigger == "new-goal-btn":
         return True
-
     if trigger == "save-new-goal":
         if name and currency and amount:
             db.write_execute(
                 """
-                INSERT INTO savings_buckets (
-                    name, currency, goal_amount, start_amount, target_date, is_active
-                ) VALUES (?, ?, ?, ?, ?, 1)
+                INSERT INTO savings_buckets (name, currency, goal_amount, start_amount, target_date, is_active)
+                VALUES (?, ?, ?, ?, ?, 1)
                 """,
                 (name, currency, float(amount), float(start or 0), date or None),
             )
         return False
-
     if trigger == "cancel-new-goal":
         return False
-
     raise PreventUpdate
 
 
@@ -376,26 +351,22 @@ def toggle_new_goal_modal(
     [Input("new-goal-modal", "is_open"), Input("transaction-modal", "is_open")],
 )
 def update_savings_buckets(new_goal_open, transaction_open):
-    """Update savings buckets display"""
     buckets = get_savings_buckets()
-
     if buckets.empty:
         return html.Div(
-            [
-                dbc.Alert(
-                    [
-                        html.H5("No Savings Goals Yet", className="alert-heading"),
-                        html.P(
-                            "Create your first savings goal to start tracking your progress!"
-                        ),
-                        html.P(
-                            "Click the 'New Goal' button above to get started.",
-                            className="mb-0 text-muted",
-                        ),
-                    ],
-                    color="info",
-                )
-            ]
+            dbc.Alert(
+                [
+                    html.H5("No Savings Goals Yet", className="alert-heading"),
+                    html.P(
+                        "Create your first savings goal to start tracking your progress!"
+                    ),
+                    html.P(
+                        "Click the 'New Goal' button above to get started.",
+                        className="mb-0 text-muted",
+                    ),
+                ],
+                color="info",
+            )
         )
 
     cards = []
@@ -409,16 +380,10 @@ def update_savings_buckets(new_goal_open, transaction_open):
         currency_symbol = "€" if bucket["currency"] == "EUR" else "$"
 
         if progress_percent >= 100:
-            progress_color = "success"
-            card_color = "success"
-        elif progress_percent >= 75:
-            progress_color = "info"
-            card_color = None
-        elif progress_percent >= 50:
-            progress_color = "warning"
-            card_color = None
-        else:
             progress_color = "primary"
+            card_color = "success"
+        else:
+            progress_color = "success"
             card_color = None
 
         if bucket["is_active"] == 0:
@@ -429,131 +394,119 @@ def update_savings_buckets(new_goal_open, transaction_open):
             status_badge = dbc.Badge("Active", color="primary", className="me-2")
 
         card = dbc.Col(
-            [
-                dbc.Card(
-                    [
-                        dbc.CardHeader(
+            dbc.Card(
+                [
+                    dbc.CardHeader(
+                        dbc.Row(
                             [
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [status_badge, html.Strong(bucket["name"])],
-                                            width=8,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                html.Small(
-                                                    bucket["currency"],
-                                                    className="text-muted",
-                                                )
-                                            ],
-                                            width=4,
-                                            className="text-end",
-                                        ),
-                                    ]
-                                )
-                            ]
-                        ),
-                        dbc.CardBody(
-                            [
-                                html.H3(
-                                    f"{currency_symbol}{bucket['current_amount']:,.2f}",
-                                    className="mb-2",
+                                dbc.Col(
+                                    [status_badge, html.Strong(bucket["name"])], width=8
                                 ),
+                                dbc.Col(
+                                    [
+                                        html.Small(
+                                            bucket["currency"], className="text-muted"
+                                        )
+                                    ],
+                                    width=4,
+                                    className="text-end",
+                                ),
+                            ]
+                        )
+                    ),
+                    dbc.CardBody(
+                        [
+                            html.H3(
+                                f"{currency_symbol}{bucket['current_amount']:,.2f}",
+                                className="mb-2",
+                            ),
+                            html.P(
+                                f"Goal: {currency_symbol}{bucket['goal_amount']:,.2f}",
+                                className="text-muted mb-3",
+                            ),
+                            dbc.Progress(
+                                value=progress_percent,
+                                color=progress_color,
+                                className="mb-3",
+                                style={"height": "25px"},
+                                label=f"{progress_percent:.1f}%",
+                            ),
+                            html.P(
+                                [
+                                    html.Strong("Remaining: "),
+                                    f"{currency_symbol}{remaining:,.2f}"
+                                    if remaining > 0
+                                    else "Goal reached! 🎉",
+                                ],
+                                className="mb-3 "
+                                + ("text-success" if remaining <= 0 else ""),
+                            ),
+                            (
                                 html.P(
-                                    f"Goal: {currency_symbol}{bucket['goal_amount']:,.2f}",
+                                    [
+                                        html.I(className="bi bi-calendar me-2"),
+                                        f"Target: {bucket['target_date']}",
+                                    ],
                                     className="text-muted mb-3",
-                                ),
-                                dbc.Progress(
-                                    value=progress_percent,
-                                    color=progress_color,
-                                    className="mb-3",
-                                    style={"height": "25px"},
-                                    label=f"{progress_percent:.1f}%",
-                                ),
-                                html.P(
-                                    [
-                                        html.Strong("Remaining: "),
-                                        f"{currency_symbol}{remaining:,.2f}"
-                                        if remaining > 0
-                                        else "Goal reached! 🎉",
-                                    ],
-                                    className="mb-3 "
-                                    + ("text-success" if remaining <= 0 else ""),
-                                ),
-                                (
-                                    html.P(
+                                )
+                                if bucket["target_date"]
+                                else html.Div()
+                            ),
+                            dbc.ButtonGroup(
+                                [
+                                    dbc.Button(
                                         [
-                                            html.I(className="bi bi-calendar me-2"),
-                                            f"Target: {bucket['target_date']}",
+                                            html.I(className="bi bi-plus-circle me-1"),
+                                            "Add",
                                         ],
-                                        className="text-muted mb-3",
-                                    )
-                                    if bucket["target_date"]
-                                    else html.Div()
-                                ),
-                                dbc.ButtonGroup(
-                                    [
-                                        dbc.Button(
-                                            [
-                                                html.I(
-                                                    className="bi bi-plus-circle me-1"
-                                                ),
-                                                "Add",
-                                            ],
-                                            id={
-                                                "type": "add-transaction-btn",
-                                                "bucket_id": int(bucket["id"]),
-                                                "action": "credit",
-                                            },
-                                            color="success",
-                                            size="sm",
-                                            outline=True,
-                                        ),
-                                        dbc.Button(
-                                            [
-                                                html.I(
-                                                    className="bi bi-dash-circle me-1"
-                                                ),
-                                                "Withdraw",
-                                            ],
-                                            id={
-                                                "type": "add-transaction-btn",
-                                                "bucket_id": int(bucket["id"]),
-                                                "action": "debit",
-                                            },
-                                            color="warning",
-                                            size="sm",
-                                            outline=True,
-                                        ),
-                                        dbc.Button(
-                                            html.I(className="bi bi-list"),
-                                            id={
-                                                "type": "view-transactions-btn",
-                                                "bucket_id": int(bucket["id"]),
-                                            },
-                                            color="info",
-                                            size="sm",
-                                            outline=True,
-                                        ),
-                                    ],
-                                    className="w-100",
-                                ),
-                            ]
-                        ),
-                    ],
-                    color=card_color,
-                    outline=True if card_color else False,
-                    className="h-100",
-                )
-            ],
+                                        id={
+                                            "type": "add-transaction-btn",
+                                            "bucket_id": int(bucket["id"]),
+                                            "action": "credit",
+                                        },
+                                        color="success",
+                                        size="sm",
+                                        outline=True,
+                                    ),
+                                    dbc.Button(
+                                        [
+                                            html.I(className="bi bi-dash-circle me-1"),
+                                            "Withdraw",
+                                        ],
+                                        id={
+                                            "type": "add-transaction-btn",
+                                            "bucket_id": int(bucket["id"]),
+                                            "action": "debit",
+                                        },
+                                        color="warning",
+                                        size="sm",
+                                        outline=True,
+                                    ),
+                                    dbc.Button(
+                                        html.I(className="bi bi-list"),
+                                        id={
+                                            "type": "view-transactions-btn",
+                                            "bucket_id": int(bucket["id"]),
+                                        },
+                                        color="info",
+                                        size="sm",
+                                        outline=True,
+                                    ),
+                                ],
+                                className="w-100",
+                            ),
+                        ]
+                    ),
+                ],
+                color=card_color,
+                outline=True if card_color else False,
+                className="h-100",
+            ),
             width=6,
             lg=4,
             className="mb-4",
         )
-
         cards.append(card)
-
     return dbc.Row(cards)
 
 
@@ -568,6 +521,7 @@ def update_savings_buckets(new_goal_open, transaction_open):
             {"type": "add-transaction-btn", "bucket_id": dash.ALL, "action": dash.ALL},
             "n_clicks",
         ),
+        Input({"type": "view-transactions-btn", "bucket_id": dash.ALL}, "n_clicks"),
         Input("save-transaction", "n_clicks"),
         Input("cancel-transaction", "n_clicks"),
     ],
@@ -576,40 +530,33 @@ def update_savings_buckets(new_goal_open, transaction_open):
             {"type": "add-transaction-btn", "bucket_id": dash.ALL, "action": dash.ALL},
             "id",
         ),
+        State({"type": "view-transactions-btn", "bucket_id": dash.ALL}, "id"),
         State("transaction-modal", "is_open"),
     ],
     prevent_initial_call=True,
 )
-def handle_transaction_modal(add_clicks, save_click, cancel_click, btn_ids, is_open):
+def handle_transaction_modal(
+    add_clicks, view_clicks, save_click, cancel_click, add_ids, view_ids, is_open
+):
     from dash import ctx
 
     trigger = ctx.triggered_id
-
-# Ignore initial None or 0 clicks
-    if trigger is None:
+    if not trigger:
         raise PreventUpdate
 
     if trigger == "cancel-transaction" or trigger == "save-transaction":
         return False, "", []
 
-# Only respond if the trigger is an actual add/withdraw button
     if isinstance(trigger, dict) and trigger.get("type") == "add-transaction-btn":
-        bucket_id = trigger["bucket_id"]
-        action = trigger["action"]
-
-        # Only proceed if the button was actually clicked (n_clicks > 0)
-        # ctx.triggered[0]['value'] corresponds to the button n_clicks
         value = ctx.triggered[0]["value"]
         if not value or value <= 0:
             raise PreventUpdate
-
+        bucket_id = trigger["bucket_id"]
+        action = trigger["action"]
         bucket = db.fetch_one(
             "SELECT name, currency FROM savings_buckets WHERE id = ?", (bucket_id,)
         )
-
-        action_text = "Add to" if action == "credit" else "Withdraw from"
-        header = f"{action_text} {bucket[0]}"
-
+        header = f"{'Add to' if action == 'credit' else 'Withdraw from'} {bucket[0]}"
         form = [
             dbc.Row(
                 [
@@ -656,8 +603,25 @@ def handle_transaction_modal(add_clicks, save_click, cancel_click, btn_ids, is_o
             dcc.Store(id="trans-bucket-id", data=bucket_id),
             dcc.Store(id="trans-action", data=action),
         ]
-
         return True, header, form
+
+    if isinstance(trigger, dict) and trigger.get("type") == "view-transactions-btn":
+        value = ctx.triggered[0]["value"]
+        if not value or value <= 0:
+            raise PreventUpdate
+        bucket_id = trigger["bucket_id"]
+        transactions = db.fetch_df(
+            "SELECT date, amount, transaction_type, description FROM savings_transactions WHERE bucket_id=? ORDER BY date DESC",
+            (bucket_id,),
+        )
+        if transactions.empty:
+            table = html.P("No transactions yet.", className="text-muted")
+        else:
+            table = dbc.Table.from_dataframe(
+                transactions, striped=True, bordered=True, hover=True
+            )
+        header = f"Transactions for Bucket {bucket_id}"
+        return True, header, table
 
     raise PreventUpdate
 
@@ -675,32 +639,17 @@ def handle_transaction_modal(add_clicks, save_click, cancel_click, btn_ids, is_o
     prevent_initial_call=True,
 )
 def save_transaction(n_clicks, amounts, dates, descs, bucket_id, action):
-    """Save transaction to database"""
     if not n_clicks or not bucket_id or not action:
         raise PreventUpdate
-
     amount = amounts[0] if amounts and amounts[0] else None
     date = dates[0] if dates and dates[0] else datetime.now().strftime("%Y-%m-%d")
     description = descs[0] if descs and descs[0] else ""
-
     if not amount:
         raise PreventUpdate
-
     db.write_execute(
-        """
-        INSERT INTO savings_transactions (
-            bucket_id, date, amount, transaction_type, description
-        ) VALUES (?, ?, ?, ?, ?)
-    """,
-        (
-            bucket_id,
-            date,
-            float(amount),
-            action,
-            description,
-        ),
+        "INSERT INTO savings_transactions (bucket_id, date, amount, transaction_type, description) VALUES (?, ?, ?, ?, ?)",
+        (bucket_id, date, float(amount), action, description),
     )
-
     return False
 
 
