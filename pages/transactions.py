@@ -82,7 +82,7 @@ def layout():
                             dbc.Checklist(
                                 id="show-quorum",
                                 options=[{"label": " Show Quorum", "value": "show"}],
-                                value=[],
+                                value=["show"],
                                 switch=True,
                             ),
                         ],
