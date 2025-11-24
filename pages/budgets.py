@@ -1049,6 +1049,8 @@ def create_compact_budget_section(type_df, budget_type, year, month):
 def create_detailed_budget_section(type_df, budget_type, year, month):
     """Create detailed section for Expenses - CATEGORY ONLY"""
 
+    type_df = type_df.copy().sort_values(by='actual_amount', ascending=False)
+
     if budget_type == "Needs":
         badge_color = "primary"
     elif budget_type == "Wants":
