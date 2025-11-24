@@ -117,6 +117,23 @@ CREATE TABLE IF NOT EXISTS savings_transactions (
     FOREIGN KEY(bucket_id) REFERENCES savings_buckets(id)
 );
 
+-- Savings allocations (linked to budgets)
+CREATE TABLE IF NOT EXISTS savings_allocations (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    bucket_id INTEGER NOT NULL,
+    year INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    allocated_amount REAL NOT NULL,
+    actual_amount REAL DEFAULT 0,
+    is_allocated BOOLEAN DEFAULT 0,
+    allocation_date DATE,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(bucket_id) REFERENCES savings_buckets(id),
+    UNIQUE(bucket_id, year, month)
+);
+
+CREATE INDEX IF NOT EXISTS idx_savings_allocations_year_month ON savings_allocations(year, month);
+
 -- Income sources (you + future partner)
 CREATE TABLE IF NOT EXISTS income_streams (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
