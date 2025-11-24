@@ -17,9 +17,6 @@ dash.register_page(__name__, path="/budgets", title="Budgets")
 
 
 def get_current_budget(year: int, month: int):
-    """Get budget for current month, create from template if doesn't exist
-    Shows ALL expense categories, actual Income and Savings only"""
-
     existing = db.fetch_df(
         """
         SELECT budget_type, category, SUM(budgeted_amount) as budgeted_amount, 
@@ -118,13 +115,14 @@ def get_current_budget(year: int, month: int):
     )
     expense_merged["budgeted_amount"] = expense_merged["budgeted_amount"].fillna(0)
 
-    income_savings = template_budgets[
-        template_budgets["budget_type"].isin(["Income", "Savings"])
-    ]
+    income_budgeted = template_budgets[template_budgets["budget_type"] == "Income"]
+    savings_budgeted = template_budgets[template_budgets["budget_type"] == "Savings"]
 
     import pandas as pd
 
-    merged = pd.concat([income_savings, expense_merged], ignore_index=True)
+    merged = pd.concat(
+        [income_budgeted, savings_budgeted, expense_merged], ignore_index=True
+    )
 
     for _, row in merged.iterrows():
         db.write_execute(
@@ -145,6 +143,24 @@ def get_current_budget(year: int, month: int):
         )
 
     return get_current_budget(year, month)
+
+
+def get_actual_income(year: int, month: int):
+    actual = db.fetch_df(
+        """
+        SELECT 
+            COALESCE(SUM(amount_eur), 0) as actual_amount,
+            COUNT(*) as transaction_count
+        FROM income_transactions
+        WHERE year = ? AND month = ?
+    """,
+        (year, month),
+    )
+
+    if actual.empty:
+        return 0, 0
+
+    return actual.iloc[0]["actual_amount"], actual.iloc[0]["transaction_count"]
 
 
 def get_actual_spending(year: int, month: int):
@@ -349,6 +365,24 @@ def layout():
                 size="xl",
                 is_open=False,
             ),
+            dbc.Modal(
+                [
+                    dbc.ModalHeader("Record Income"),
+                    dbc.ModalBody([html.Div(id="record-income-form")]),
+                    dbc.ModalFooter(
+                        [
+                            dbc.Button(
+                                "Cancel", id="cancel-income-record", color="secondary"
+                            ),
+                            dbc.Button(
+                                "Save", id="save-income-record", color="primary"
+                            ),
+                        ]
+                    ),
+                ],
+                id="record-income-modal",
+                is_open=False,
+            ),
         ],
         fluid=True,
     )
@@ -364,10 +398,10 @@ def layout():
     [Input("current-year", "data"), Input("current-month", "data")],
 )
 def update_budget_view(year, month):
-    """Update budget view with summary and details"""
-
     budget_df = get_current_budget(year, month)
     actual_df = get_actual_spending(year, month)
+
+    actual_income_amount, income_count = get_actual_income(year, month)
 
     merged = budget_df.merge(
         actual_df,
@@ -376,6 +410,11 @@ def update_budget_view(year, month):
     )
     merged["actual_amount"] = merged["actual_amount"].fillna(0)
     merged["transaction_count"] = merged["transaction_count"].fillna(0).astype(int)
+
+    merged.loc[merged["budget_type"] == "Income", "actual_amount"] = (
+        actual_income_amount
+    )
+    merged.loc[merged["budget_type"] == "Income", "transaction_count"] = income_count
 
     summary = create_summary_cards(merged)
     details = create_budget_details(merged, year, month)
@@ -392,9 +431,8 @@ def update_budget_view(year, month):
 
 
 def create_summary_cards(df):
-    """Create summary cards showing totals"""
-
-    income = df[df["budget_type"] == "Income"]["budgeted_amount"].sum()
+    income_budget = df[df["budget_type"] == "Income"]["budgeted_amount"].sum()
+    income_actual = df[df["budget_type"] == "Income"]["actual_amount"].sum()
     savings_budget = df[df["budget_type"] == "Savings"]["budgeted_amount"].sum()
     savings_actual = df[df["budget_type"] == "Savings"]["actual_amount"].sum()
     needs_budget = df[df["budget_type"] == "Needs"]["budgeted_amount"].sum()
@@ -403,7 +441,7 @@ def create_summary_cards(df):
     wants_actual = df[df["budget_type"] == "Wants"]["actual_amount"].sum()
     total_budget = savings_budget + needs_budget + wants_budget
     total_actual = savings_actual + needs_actual + wants_actual
-    remaining = income - total_actual
+    remaining = income_actual - total_actual
 
     return dbc.Row(
         [
@@ -414,11 +452,24 @@ def create_summary_cards(df):
                             dbc.CardBody(
                                 [
                                     html.H6("Income", className="text-muted mb-2"),
-                                    html.H3(f"€{income:,.2f}", className="mb-0"),
+                                    html.H3(f"€{income_actual:,.2f}", 
+                                        className="mb-0 text-success"
+                                        if remaining >= 0
+                                        else "mb-0 text-muted",
+                                            ),
+                                    html.Small(
+                                        f"of €{income_budget:,.2f}",
+                                        className="text-muted",
+                                    ),
+                                    create_mini_progress_bar(
+                                        income_actual, income_budget
+                                    ),
                                 ]
                             )
                         ],
                         className="h-100",
+                        color="success" if income_actual >= income_budget else "muted",
+                        outline=True,
                     )
                 ],
                 width=2,
@@ -611,7 +662,6 @@ def create_budget_details(df, year, month):
 
 
 def create_compact_budget_section(type_df, budget_type, year, month):
-    """Create compact section for Income/Savings - CATEGORY ONLY"""
     badge_color = "secondary" if budget_type == "Income" else "success"
 
     rows = []
@@ -648,7 +698,22 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                         color="primary",
                                         size="sm",
                                         outline=True,
+                                        className="me-1",
+                                    ),
+                                    dbc.Button(
+                                        html.I(className="bi bi-plus-circle"),
+                                        id={
+                                            "type": "record-income-btn",
+                                            "year": year,
+                                            "month": month,
+                                            "category": row["category"],
+                                        },
+                                        color="success",
+                                        size="sm",
+                                        outline=True,
                                     )
+                                    if budget_type == "Income"
+                                    else html.Div(),
                                 ],
                                 width=4,
                                 className="text-end",
@@ -1471,6 +1536,310 @@ def lock_month(n_clicks, year, month):
             (year, month),
         )
         return [html.I(className="bi bi-unlock me-2"), "Unlock Month"]
+
+
+@callback(
+    [
+        Output("record-income-modal", "is_open"),
+        Output("record-income-form", "children"),
+    ],
+    [
+        Input(
+            {
+                "type": "record-income-btn",
+                "year": dash.ALL,
+                "month": dash.ALL,
+                "category": dash.ALL,
+            },
+            "n_clicks",
+        )
+    ],
+    [
+        State(
+            {
+                "type": "record-income-btn",
+                "year": dash.ALL,
+                "month": dash.ALL,
+                "category": dash.ALL,
+            },
+            "id",
+        ),
+        State("record-income-modal", "is_open"),
+    ],
+    prevent_initial_call=True,
+)
+def open_income_modal(n_clicks, btn_ids, is_open):
+    from dash import ctx
+
+    if not any(n_clicks):
+        return is_open, []
+
+    button_id = ctx.triggered_id
+    if not button_id:
+        return is_open, []
+
+    year = button_id["year"]
+    month = button_id["month"]
+    category = button_id["category"]
+
+    income_streams = db.fetch_df(
+        "SELECT id, name, amount FROM income_streams WHERE is_active = 1"
+    )
+
+    stream_options = [
+        {"label": f"{row['name']} (€{row['amount']:,.2f})", "value": row["id"]}
+        for _, row in income_streams.iterrows()
+    ]
+    stream_options.insert(0, {"label": "+ Add New Income Stream", "value": "new"})
+
+    form = [
+        dbc.Row(
+            [
+                dbc.Col([html.Strong("Category:"), html.P(category)], width=6),
+                dbc.Col(
+                    [
+                        html.Strong("Month:"),
+                        html.P(f"{calendar.month_name[month]} {year}"),
+                    ],
+                    width=6,
+                ),
+            ],
+            className="mb-3",
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Label("Income Source"),
+                        dcc.Dropdown(
+                            id="income-stream-select",
+                            options=stream_options,
+                            placeholder="Select or create income source...",
+                            value=None,
+                        ),
+                    ]
+                )
+            ],
+            className="mb-3",
+        ),
+        html.Div(
+            id="new-stream-fields",
+            style={"display": "none"},
+            children=[
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                dbc.Label("Stream Name *"),
+                                dbc.Input(
+                                    id="new-stream-name",
+                                    type="text",
+                                    placeholder="e.g., Monthly Salary",
+                                ),
+                            ],
+                            width=6,
+                        ),
+                        dbc.Col(
+                            [
+                                dbc.Label("Default Amount (€) *"),
+                                dbc.Input(
+                                    id="new-stream-amount",
+                                    type="number",
+                                    step=0.01,
+                                    placeholder="2844.67",
+                                ),
+                            ],
+                            width=6,
+                        ),
+                    ],
+                    className="mb-3",
+                ),
+                dbc.Row(
+                    [
+                        dbc.Col(
+                            [
+                                dbc.Label("Frequency"),
+                                dcc.Dropdown(
+                                    id="new-stream-frequency",
+                                    options=[
+                                        {"label": "Monthly", "value": "monthly"},
+                                        {"label": "Biweekly", "value": "biweekly"},
+                                        {"label": "Weekly", "value": "weekly"},
+                                        {"label": "Annual", "value": "annual"},
+                                    ],
+                                    value="monthly",
+                                    clearable=False,
+                                ),
+                            ],
+                            width=6,
+                        ),
+                        dbc.Col(
+                            [
+                                dbc.Label("Owner"),
+                                dbc.Input(
+                                    id="new-stream-owner",
+                                    type="text",
+                                    placeholder="You",
+                                    value="You",
+                                ),
+                            ],
+                            width=6,
+                        ),
+                    ],
+                    className="mb-3",
+                ),
+            ],
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Label("Amount (€)"),
+                        dbc.Input(
+                            id="income-amount",
+                            type="number",
+                            step=0.01,
+                            placeholder="Enter amount",
+                        ),
+                    ],
+                    width=6,
+                ),
+                dbc.Col(
+                    [
+                        dbc.Label("Date"),
+                        dbc.Input(
+                            id="income-date",
+                            type="date",
+                            value=f"{year}-{month:02d}-01",
+                        ),
+                    ],
+                    width=6,
+                ),
+            ],
+            className="mb-3",
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Label("Description"),
+                        dbc.Input(
+                            id="income-description",
+                            type="text",
+                            placeholder="e.g., Monthly salary",
+                        ),
+                    ]
+                )
+            ],
+        ),
+        dcc.Store(
+            id="income-record-data",
+            data={
+                "year": year,
+                "month": month,
+                "category": category,
+            },
+        ),
+    ]
+
+    return True, form
+
+
+@callback(
+    Output("new-stream-fields", "style"),
+    [Input("income-stream-select", "value")],
+    prevent_initial_call=True,
+)
+def toggle_new_stream_fields(stream_value):
+    if stream_value == "new":
+        return {"display": "block"}
+    else:
+        return {"display": "none"}
+
+
+@callback(
+    Output("record-income-modal", "is_open", allow_duplicate=True),
+    [
+        Input("save-income-record", "n_clicks"),
+        Input("cancel-income-record", "n_clicks"),
+    ],
+    [
+        State("income-stream-select", "value"),
+        State("income-amount", "value"),
+        State("income-date", "value"),
+        State("income-description", "value"),
+        State("new-stream-name", "value"),
+        State("new-stream-amount", "value"),
+        State("new-stream-frequency", "value"),
+        State("new-stream-owner", "value"),
+        State("income-record-data", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def save_income_record(
+    save_clicks,
+    cancel_clicks,
+    stream_id,
+    amount,
+    date,
+    description,
+    new_name,
+    new_amount,
+    new_frequency,
+    new_owner,
+    data,
+):
+    from dash import ctx
+
+    if not ctx.triggered_id:
+        return False
+
+    if ctx.triggered_id == "cancel-income-record":
+        return False
+
+    if ctx.triggered_id == "save-income-record":
+        if stream_id == "new":
+            if not new_name or not new_amount:
+                return True
+
+            cursor = db.write_execute(
+                """
+                INSERT INTO income_streams
+                (name, amount, frequency, is_active, owner)
+                VALUES (?, ?, ?, 1, ?)
+            """,
+                (new_name, float(new_amount), new_frequency, new_owner),
+            )
+            stream_id = cursor.lastrowid
+            amount = new_amount
+            description = new_name
+
+        if amount is None:
+            return True
+
+        if not description:
+            stream_name = db.fetch_one(
+                "SELECT name FROM income_streams WHERE id = ?", (stream_id,)
+            )
+            description = stream_name[0] if stream_name else "Income"
+
+        db.write_execute(
+            """
+            INSERT INTO income_transactions
+            (date, description, amount_eur, income_stream_id, year, month, notes)
+            VALUES (?, ?, ?, ?, ?, ?, NULL)
+        """,
+            (
+                date,
+                description,
+                float(amount),
+                stream_id,
+                data["year"],
+                data["month"],
+            ),
+        )
+
+    return False
 
 
 if __name__ == "__main__":

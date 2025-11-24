@@ -30,6 +30,23 @@ CREATE TABLE IF NOT EXISTS transactions (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
+-- Income transactions
+CREATE TABLE IF NOT EXISTS income_transactions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    date DATE NOT NULL,
+    description TEXT NOT NULL,
+    amount_eur REAL NOT NULL,
+    income_stream_id INTEGER,
+    year INTEGER NOT NULL,
+    month INTEGER NOT NULL,
+    notes TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(income_stream_id) REFERENCES income_streams(id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_income_transactions_date ON income_transactions(date);
+CREATE INDEX IF NOT EXISTS idx_income_transactions_year_month ON income_transactions(year, month);
+
 -- Category definitions
 CREATE TABLE IF NOT EXISTS categories (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
