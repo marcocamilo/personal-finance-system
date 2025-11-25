@@ -709,8 +709,6 @@ def create_budget_details(df, year, month):
     left_sections = []
     for budget_type in income_savings_types:
         type_df = df[df["budget_type"] == budget_type]
-        if type_df.empty:
-            continue
 
         section = create_compact_budget_section(type_df, budget_type, year, month)
         left_sections.append(section)
@@ -718,8 +716,6 @@ def create_budget_details(df, year, month):
     right_sections = []
     for budget_type in expense_types:
         type_df = df[df["budget_type"] == budget_type]
-        if type_df.empty:
-            continue
 
         section = create_detailed_budget_section(type_df, budget_type, year, month)
         right_sections.append(section)
