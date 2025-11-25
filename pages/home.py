@@ -61,18 +61,43 @@ def get_month_summary(year: int, month: int):
         FROM transactions
         WHERE date BETWEEN ? AND ?
           AND is_quorum = 0
+          AND category IS NOT NULL
         GROUP BY category
         ORDER BY total_eur DESC
     """,
         (first_day, last_day),
     )
 
+    quorum_status = db.fetch_one(
+        """
+        SELECT 
+            total_quorum_usd,
+            reimbursed_amount_usd,
+            reimbursement_date
+        FROM reimbursements
+        WHERE year = ? AND month = ?
+    """,
+        (year, month),
+    )
+
+    quorum_info = {
+        "total": float(quorum_spending),
+        "reimbursed": float(quorum_status[1])
+        if quorum_status and quorum_status[1]
+        else 0,
+        "date": quorum_status[2] if quorum_status and quorum_status[2] else None,
+        "pending": float(quorum_spending)
+        - (float(quorum_status[1]) if quorum_status and quorum_status[1] else 0),
+    }
+
     return {
         "your_spending_usd": float(your_spending),
         "your_spending_eur": float(your_eur),
         "quorum_spending_usd": float(quorum_spending),
-        "total_spending_usd": float(your_spending + quorum_spending),
+        "total_credit_card_usd": float(your_spending + quorum_spending),
+        "net_you_pay_usd": float(your_spending + quorum_info["pending"]),
         "category_breakdown": category_breakdown,
+        "quorum_info": quorum_info,
     }
 
 
@@ -124,7 +149,7 @@ def render_dashboard(year, month):
                     dbc.Col(
                         [
                             html.H2(f"{month_name} {year}", className="mb-0"),
-                            html.P("Overview of your finances", className="text-muted"),
+                            html.P("Financial overview", className="text-muted"),
                         ],
                         width=8,
                     ),
@@ -187,10 +212,17 @@ def render_dashboard(year, month):
                                         className="mb-0 text-success",
                                     ),
                                     html.Small(
-                                        "USD transactions", className="text-muted"
+                                        f"Pending: ${summary['quorum_info']['pending']:,.2f}"
+                                        if summary["quorum_info"]["pending"] > 0
+                                        else "Reimbursed ✓",
+                                        className="text-muted",
                                     ),
                                 ]
-                            )
+                            ),
+                            color="success"
+                            if summary["quorum_info"]["pending"] == 0
+                            else None,
+                            outline=True,
                         ),
                         width=3,
                     ),
@@ -202,14 +234,16 @@ def render_dashboard(year, month):
                                         "Total Credit Card", className="text-muted mb-2"
                                     ),
                                     html.H3(
-                                        f"${summary['total_spending_usd']:,.2f}",
+                                        f"${summary['total_credit_card_usd']:,.2f}",
                                         className="mb-0",
                                     ),
                                     html.Small(
-                                        "Total USD charged", className="text-muted"
+                                        "Your + Quorum charges", className="text-muted"
                                     ),
                                 ]
-                            )
+                            ),
+                            color="muted",
+                            outline=True,
                         ),
                         width=3,
                     ),
@@ -238,6 +272,32 @@ def render_dashboard(year, month):
                 ],
                 className="mb-4",
             ),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            dbc.Alert(
+                                [
+                                    html.I(className="bi bi-exclamation-triangle me-2"),
+                                    f"{uncategorized_count} transaction(s) need categorization. ",
+                                    dbc.Button(
+                                        "Review Now",
+                                        href="/transactions",
+                                        color="warning",
+                                        size="sm",
+                                        className="ms-2",
+                                    ),
+                                ],
+                                color="warning",
+                                className="mb-0",
+                            )
+                        ]
+                    )
+                ],
+                className="mb-4",
+            )
+            if uncategorized_count > 0
+            else html.Div(),
             dbc.Row(
                 [
                     dbc.Col(
@@ -272,57 +332,6 @@ def render_dashboard(year, month):
                 ],
                 className="mb-4",
             ),
-            dbc.Row(
-                [
-                    dbc.Col(
-                        dbc.Card(
-                            dbc.CardBody(
-                                [
-                                    html.H5("Quick Actions", className="mb-3"),
-                                    dbc.ButtonGroup(
-                                        [
-                                            dbc.Button(
-                                                [
-                                                    html.I(
-                                                        className="bi bi-upload me-2"
-                                                    ),
-                                                    "Import Transactions",
-                                                ],
-                                                href="/import",
-                                                color="primary",
-                                                outline=True,
-                                            ),
-                                            dbc.Button(
-                                                [
-                                                    html.I(
-                                                        className="bi bi-receipt me-2"
-                                                    ),
-                                                    "View All Transactions",
-                                                ],
-                                                href="/transactions",
-                                                color="secondary",
-                                                outline=True,
-                                            ),
-                                            dbc.Button(
-                                                [
-                                                    html.I(
-                                                        className="bi bi-wallet2 me-2"
-                                                    ),
-                                                    "Manage Budgets",
-                                                ],
-                                                href="/budgets",
-                                                color="secondary",
-                                                outline=True,
-                                            ),
-                                        ],
-                                        className="w-100",
-                                    ),
-                                ]
-                            )
-                        )
-                    )
-                ]
-            ),
         ]
     )
 
@@ -343,17 +352,17 @@ def create_category_bar_chart(df):
         return fig
 
     CATEGORY_COLORS = {
-        "Rent": "#1f77b4",  # blue (Plotly 1)
-        "Groceries & Living": "#d62728",  # red (Plotly 2)
-        "Phone Bill": "#17becf",  # cyan-like blue (Plotly 10, lighter than dark blue)
-        "Transportation": "#bcbd22",  # lime / yellow-green (Plotly 8, replaces previous cyan)
-        "Travel": "#ff7f0e",  # orange (Plotly 3)
-        "Shopping": "#ffbc79",  # yellow/orange (Plotly 4, softer than previous)
-        "Restaurants": "#3EB489",  # green (Plotly 5, mint-like)
-        "Subscriptions": "#9467bd",  # purple (Plotly 6, light viola tone)
-        "Quorum": "#5dade2",  # light blue (keep similar)
-        "Unexpected": "#7f7f7f",  # gray (Plotly neutral)
-        "Taxes": "#2e2e2e",  # dark gray (kept)
+        "Rent": "#1f77b4",
+        "Groceries & Living": "#d62728",
+        "Phone Bill": "#17becf",
+        "Transportation": "#bcbd22",
+        "Travel": "#ff7f0e",
+        "Shopping": "#ffbc79",
+        "Restaurants": "#3EB489",
+        "Subscriptions": "#9467bd",
+        "Quorum": "#5dade2",
+        "Unexpected": "#7f7f7f",
+        "Taxes": "#2e2e2e",
     }
 
     max_value = df["total_eur"].max()
@@ -376,7 +385,7 @@ def create_category_bar_chart(df):
         xaxis_title="Total EUR",
         yaxis_title=None,
         showlegend=False,
-        xaxis_range=[0, max_value * 1.1],
+        xaxis_range=[0, max_value * 1.15],
     )
 
     return fig
