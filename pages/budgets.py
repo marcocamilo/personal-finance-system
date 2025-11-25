@@ -484,22 +484,8 @@ def update_budget_view(year, month):
         actual_income_amount
     )
     merged.loc[merged["budget_type"] == "Income", "transaction_count"] = income_count
-
-    import pandas as pd
-
-    savings_row = pd.DataFrame(
-        [
-            {
-                "budget_type": "Savings",
-                "category": "Savings Account",
-                "budgeted_amount": savings_budgeted,
-                "actual_amount": savings_actual,
-                "transaction_count": 0,
-                "template_id": None,
-            }
-        ]
-    )
-    merged = pd.concat([merged, savings_row], ignore_index=True)
+    
+    merged.loc[merged["budget_type"] == "Savings", "actual_amount"] = savings_actual
 
     summary = create_summary_cards(merged)
     details = create_budget_details(merged, year, month)
