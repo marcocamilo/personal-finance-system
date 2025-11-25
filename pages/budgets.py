@@ -484,7 +484,7 @@ def update_budget_view(year, month):
         actual_income_amount
     )
     merged.loc[merged["budget_type"] == "Income", "transaction_count"] = income_count
-    
+
     merged.loc[merged["budget_type"] == "Savings", "actual_amount"] = savings_actual
 
     summary = create_summary_cards(merged)
@@ -504,10 +504,12 @@ def update_budget_view(year, month):
 def create_summary_cards(df):
     income_budget = df[df["budget_type"] == "Income"]["budgeted_amount"].sum()
     income_actual = df[df["budget_type"] == "Income"]["actual_amount"].sum()
-    
+
     savings_budget = df[df["budget_type"] == "Savings"]["budgeted_amount"].sum()
     if savings_budget == 0:
-        template_id = db.fetch_one("SELECT id FROM budget_templates WHERE is_active = 1")
+        template_id = db.fetch_one(
+            "SELECT id FROM budget_templates WHERE is_active = 1"
+        )
         if template_id:
             template_savings = db.fetch_one(
                 "SELECT SUM(budgeted_amount) FROM template_categories WHERE template_id = ? AND budget_type = 'Savings'",
@@ -515,7 +517,7 @@ def create_summary_cards(df):
             )
             if template_savings and template_savings[0]:
                 savings_budget = template_savings[0]
-    
+
     savings_actual = df[df["budget_type"] == "Savings"]["actual_amount"].sum()
     needs_budget = df[df["budget_type"] == "Needs"]["budgeted_amount"].sum()
     needs_actual = df[df["budget_type"] == "Needs"]["actual_amount"].sum()
@@ -578,9 +580,7 @@ def create_summary_cards(df):
                             )
                         ],
                         className="h-100",
-                        color="success"
-                        if savings_actual >= savings_budget * 0.95
-                        else "danger",
+                        color="muted" if savings_actual != 0 else "danger",
                         outline=True,
                     )
                 ],
@@ -605,7 +605,7 @@ def create_summary_cards(df):
                             )
                         ],
                         className="h-100",
-                        color="primary" if needs_actual <= needs_budget else "danger",
+                        color="muted" if needs_actual <= needs_budget else "danger",
                         outline=True,
                     )
                 ],
@@ -630,7 +630,7 @@ def create_summary_cards(df):
                             )
                         ],
                         className="h-100",
-                        color="info" if wants_actual <= wants_budget else "danger",
+                        color="muted" if wants_actual <= wants_budget else "danger",
                         outline=True,
                     )
                 ],
@@ -884,11 +884,17 @@ def create_compact_budget_section(type_df, budget_type, year, month):
 
     elif budget_type == "Savings":
         allocations = get_savings_allocations(year, month)
-        
-        total_allocated = allocations["allocated_amount"].sum() if not allocations.empty else 0
-        total_actual = allocations["actual_amount"].sum() if not allocations.empty else 0
-        
-        template_id = db.fetch_one("SELECT id FROM budget_templates WHERE is_active = 1")
+
+        total_allocated = (
+            allocations["allocated_amount"].sum() if not allocations.empty else 0
+        )
+        total_actual = (
+            allocations["actual_amount"].sum() if not allocations.empty else 0
+        )
+
+        template_id = db.fetch_one(
+            "SELECT id FROM budget_templates WHERE is_active = 1"
+        )
         budgeted = 0
         if template_id:
             template_savings = db.fetch_one(
@@ -902,7 +908,7 @@ def create_compact_budget_section(type_df, budget_type, year, month):
         for _, alloc in allocations.iterrows():
             status_icon = "✓" if alloc["is_allocated"] else "○"
             status_class = "text-success" if alloc["is_allocated"] else "text-muted"
-            
+
             allocation_rows.append(
                 dbc.ListGroupItem(
                     [
@@ -910,9 +916,13 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                             [
                                 dbc.Col(
                                     [
-                                        html.Span(status_icon, className=f"{status_class} me-2"),
+                                        html.Span(
+                                            status_icon,
+                                            className=f"{status_class} me-2",
+                                        ),
                                         html.Div(
-                                            alloc["bucket_name"], className="fw-bold d-inline"
+                                            alloc["bucket_name"],
+                                            className="fw-bold d-inline",
                                         ),
                                         html.Br(),
                                         html.Small(
@@ -930,7 +940,9 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                                     html.I(className="bi bi-pencil"),
                                                     id={
                                                         "type": "edit-allocation-btn",
-                                                        "bucket_id": int(alloc["bucket_id"]),
+                                                        "bucket_id": int(
+                                                            alloc["bucket_id"]
+                                                        ),
                                                         "year": year,
                                                         "month": month,
                                                     },
@@ -939,10 +951,16 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                                     outline=True,
                                                 ),
                                                 dbc.Button(
-                                                    html.I(className="bi bi-check-circle" if not alloc["is_allocated"] else "bi bi-check-circle-fill"),
+                                                    html.I(
+                                                        className="bi bi-check-circle"
+                                                        if not alloc["is_allocated"]
+                                                        else "bi bi-check-circle-fill"
+                                                    ),
                                                     id={
                                                         "type": "allocate-savings-btn",
-                                                        "bucket_id": int(alloc["bucket_id"]),
+                                                        "bucket_id": int(
+                                                            alloc["bucket_id"]
+                                                        ),
                                                         "year": year,
                                                         "month": month,
                                                     },
@@ -955,7 +973,9 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                                     html.I(className="bi bi-trash"),
                                                     id={
                                                         "type": "delete-allocation-btn",
-                                                        "bucket_id": int(alloc["bucket_id"]),
+                                                        "bucket_id": int(
+                                                            alloc["bucket_id"]
+                                                        ),
                                                         "year": year,
                                                         "month": month,
                                                     },
@@ -989,7 +1009,9 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                             color=badge_color,
                                             className="me-2",
                                         ),
-                                        html.Span(f"€{total_actual:,.2f} / €{budgeted:,.2f}"),
+                                        html.Span(
+                                            f"€{total_actual:,.2f} / €{budgeted:,.2f}"
+                                        ),
                                     ],
                                     width=8,
                                 ),
@@ -1035,7 +1057,7 @@ def create_compact_budget_section(type_df, budget_type, year, month):
 def create_detailed_budget_section(type_df, budget_type, year, month):
     """Create detailed section for Expenses - CATEGORY ONLY"""
 
-    type_df = type_df.copy().sort_values(by='actual_amount', ascending=False)
+    type_df = type_df.copy().sort_values(by="actual_amount", ascending=False)
 
     if budget_type == "Needs":
         badge_color = "primary"
@@ -2721,49 +2743,79 @@ def save_stream_edit(
 
     return False
 
+
 @callback(
     [Output("allocation-modal", "is_open"), Output("allocation-form", "children")],
     [
-        Input({"type": "add-allocation-btn", "year": dash.ALL, "month": dash.ALL}, "n_clicks"),
-        Input({"type": "edit-allocation-btn", "bucket_id": dash.ALL, "year": dash.ALL, "month": dash.ALL}, "n_clicks"),
+        Input(
+            {"type": "add-allocation-btn", "year": dash.ALL, "month": dash.ALL},
+            "n_clicks",
+        ),
+        Input(
+            {
+                "type": "edit-allocation-btn",
+                "bucket_id": dash.ALL,
+                "year": dash.ALL,
+                "month": dash.ALL,
+            },
+            "n_clicks",
+        ),
     ],
     [
-        State({"type": "add-allocation-btn", "year": dash.ALL, "month": dash.ALL}, "id"),
-        State({"type": "edit-allocation-btn", "bucket_id": dash.ALL, "year": dash.ALL, "month": dash.ALL}, "id"),
+        State(
+            {"type": "add-allocation-btn", "year": dash.ALL, "month": dash.ALL}, "id"
+        ),
+        State(
+            {
+                "type": "edit-allocation-btn",
+                "bucket_id": dash.ALL,
+                "year": dash.ALL,
+                "month": dash.ALL,
+            },
+            "id",
+        ),
         State("allocation-modal", "is_open"),
     ],
     prevent_initial_call=True,
 )
 def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
     from dash import ctx
-    
+
     if not any(add_clicks or []) and not any(edit_clicks or []):
         return is_open, []
-    
+
     button_id = ctx.triggered_id
     if not button_id:
         return is_open, []
-    
+
     year = button_id["year"]
     month = button_id["month"]
-    
-    buckets = db.fetch_df("SELECT id, name, currency FROM savings_buckets WHERE is_active = 1")
+
+    buckets = db.fetch_df(
+        "SELECT id, name, currency FROM savings_buckets WHERE is_active = 1"
+    )
     bucket_options = [
-        {"label": f"{row['name']} ({row['currency']})", "value": row['id']}
+        {"label": f"{row['name']} ({row['currency']})", "value": row["id"]}
         for _, row in buckets.iterrows()
     ]
-    
+
     if button_id.get("type") == "edit-allocation-btn":
         bucket_id = button_id["bucket_id"]
         allocation = db.fetch_one(
             "SELECT allocated_amount FROM savings_allocations WHERE bucket_id = ? AND year = ? AND month = ?",
             (bucket_id, year, month),
         )
-        
+
         form = [
             dbc.Row(
                 [
-                    dbc.Col([html.Strong("Month:"), html.P(f"{calendar.month_name[month]} {year}")], width=12),
+                    dbc.Col(
+                        [
+                            html.Strong("Month:"),
+                            html.P(f"{calendar.month_name[month]} {year}"),
+                        ],
+                        width=12,
+                    ),
                 ],
                 className="mb-3",
             ),
@@ -2800,15 +2852,24 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                     ),
                 ],
             ),
-            dcc.Store(id="allocation-data", data={"year": year, "month": month, "bucket_id": bucket_id}),
+            dcc.Store(
+                id="allocation-data",
+                data={"year": year, "month": month, "bucket_id": bucket_id},
+            ),
         ]
-        
+
         return True, form
     else:
         form = [
             dbc.Row(
                 [
-                    dbc.Col([html.Strong("Month:"), html.P(f"{calendar.month_name[month]} {year}")], width=12),
+                    dbc.Col(
+                        [
+                            html.Strong("Month:"),
+                            html.P(f"{calendar.month_name[month]} {year}"),
+                        ],
+                        width=12,
+                    ),
                 ],
                 className="mb-3",
             ),
@@ -2844,9 +2905,12 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                     ),
                 ],
             ),
-            dcc.Store(id="allocation-data", data={"year": year, "month": month, "bucket_id": None}),
+            dcc.Store(
+                id="allocation-data",
+                data={"year": year, "month": month, "bucket_id": None},
+            ),
         ]
-        
+
         return True, form
 
 
@@ -2862,17 +2926,17 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
 )
 def save_allocation(save_click, cancel_click, bucket_id, amount, data):
     from dash import ctx
-    
+
     if not ctx.triggered_id:
         return False
-    
+
     if ctx.triggered_id == "cancel-allocation":
         return False
-    
+
     if ctx.triggered_id == "save-allocation" and bucket_id and amount and amount > 0:
         year = data["year"]
         month = data["month"]
-        
+
         db.write_execute(
             """
             INSERT INTO savings_allocations (bucket_id, year, month, allocated_amount)
@@ -2882,35 +2946,55 @@ def save_allocation(save_click, cancel_click, bucket_id, amount, data):
         """,
             (bucket_id, year, month, float(amount)),
         )
-    
+
     return False
 
 
 @callback(
     Output("current-year", "data", allow_duplicate=True),
-    [Input({"type": "delete-allocation-btn", "bucket_id": dash.ALL, "year": dash.ALL, "month": dash.ALL}, "n_clicks")],
-    [State({"type": "delete-allocation-btn", "bucket_id": dash.ALL, "year": dash.ALL, "month": dash.ALL}, "id")],
+    [
+        Input(
+            {
+                "type": "delete-allocation-btn",
+                "bucket_id": dash.ALL,
+                "year": dash.ALL,
+                "month": dash.ALL,
+            },
+            "n_clicks",
+        )
+    ],
+    [
+        State(
+            {
+                "type": "delete-allocation-btn",
+                "bucket_id": dash.ALL,
+                "year": dash.ALL,
+                "month": dash.ALL,
+            },
+            "id",
+        )
+    ],
     prevent_initial_call=True,
 )
 def delete_allocation(n_clicks, btn_ids):
     from dash import ctx
-    
+
     if not any(n_clicks):
         raise PreventUpdate
-    
+
     button_id = ctx.triggered_id
     if not button_id:
         raise PreventUpdate
-    
+
     bucket_id = button_id["bucket_id"]
     year = button_id["year"]
     month = button_id["month"]
-    
+
     is_allocated = db.fetch_one(
         "SELECT is_allocated FROM savings_allocations WHERE bucket_id = ? AND year = ? AND month = ?",
         (bucket_id, year, month),
     )
-    
+
     if is_allocated and is_allocated[0]:
         db.write_execute(
             """
@@ -2920,15 +3004,21 @@ def delete_allocation(n_clicks, btn_ids):
             AND date <= ?
             AND description LIKE ?
         """,
-            (bucket_id, f"{year}-{month:02d}-01", f"{year}-{month:02d}-31", f"%{calendar.month_name[month]} {year}%"),
+            (
+                bucket_id,
+                f"{year}-{month:02d}-01",
+                f"{year}-{month:02d}-31",
+                f"%{calendar.month_name[month]} {year}%",
+            ),
         )
-    
+
     db.write_execute(
         "DELETE FROM savings_allocations WHERE bucket_id = ? AND year = ? AND month = ?",
         (bucket_id, year, month),
     )
-    
+
     return dash.no_update
+
 
 @callback(
     [
@@ -3139,43 +3229,69 @@ def delete_allocation(n_clicks, btn_ids, data):
 
 @callback(
     Output("current-year", "data", allow_duplicate=True),
-    [Input({"type": "allocate-savings-btn", "bucket_id": dash.ALL, "year": dash.ALL, "month": dash.ALL}, "n_clicks")],
-    [State({"type": "allocate-savings-btn", "bucket_id": dash.ALL, "year": dash.ALL, "month": dash.ALL}, "id")],
+    [
+        Input(
+            {
+                "type": "allocate-savings-btn",
+                "bucket_id": dash.ALL,
+                "year": dash.ALL,
+                "month": dash.ALL,
+            },
+            "n_clicks",
+        )
+    ],
+    [
+        State(
+            {
+                "type": "allocate-savings-btn",
+                "bucket_id": dash.ALL,
+                "year": dash.ALL,
+                "month": dash.ALL,
+            },
+            "id",
+        )
+    ],
     prevent_initial_call=True,
 )
 def allocate_to_bucket(n_clicks, btn_ids):
     from dash import ctx
-    
+
     if not any(n_clicks):
         raise PreventUpdate
-    
+
     button_id = ctx.triggered_id
     if not button_id:
         raise PreventUpdate
-    
+
     bucket_id = button_id["bucket_id"]
     year = button_id["year"]
     month = button_id["month"]
-    
+
     allocation = db.fetch_one(
         "SELECT allocated_amount FROM savings_allocations WHERE bucket_id = ? AND year = ? AND month = ?",
         (bucket_id, year, month),
     )
-    
+
     if allocation and allocation[0]:
         amount = allocation[0]
-        
+
         from datetime import datetime
+
         today = datetime.now().strftime("%Y-%m-%d")
-        
+
         db.write_execute(
             """
             INSERT INTO savings_transactions (bucket_id, date, amount, transaction_type, description)
             VALUES (?, ?, ?, 'credit', ?)
         """,
-            (bucket_id, today, amount, f"Monthly allocation - {calendar.month_name[month]} {year}"),
+            (
+                bucket_id,
+                today,
+                amount,
+                f"Monthly allocation - {calendar.month_name[month]} {year}",
+            ),
         )
-        
+
         db.write_execute(
             """
             UPDATE savings_allocations 
@@ -3184,7 +3300,7 @@ def allocate_to_bucket(n_clicks, btn_ids):
         """,
             (amount, today, bucket_id, year, month),
         )
-    
+
     return dash.no_update
 
 
