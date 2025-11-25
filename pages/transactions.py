@@ -9,6 +9,7 @@ from datetime import datetime
 import dash
 import dash_bootstrap_components as dbc
 from dash import ALL, Input, Output, State, callback, ctx, dcc, html
+from dash.exceptions import PreventUpdate
 
 from database.db import db
 from import_pipeline.categorizer import Categorizer
@@ -23,16 +24,16 @@ def layout():
     current_month = today.strftime("%Y-%m")
 
     categories = db.fetch_all(
-        "SELECT DISTINCT category FROM categories ORDER BY category"
+        "SELECT DISTINCT category FROM categories WHERE is_active = 1 ORDER BY category"
     )
     category_options = [{"label": "All Categories", "value": "all"}] + [
         {"label": cat[0], "value": cat[0]} for cat in categories
     ]
 
     subcategories = db.fetch_all(
-        "SELECT DISTINCT subcategory FROM categories ORDER BY subcategory"
+        "SELECT DISTINCT subcategory FROM categories WHERE is_active = 1 ORDER BY subcategory"
     )
-    subcat_options = [
+    subcat_options = [{"label": "All Subcategories", "value": "all"}] + [
         {"label": subcat[0], "value": subcat[0]} for subcat in subcategories
     ]
 
@@ -51,7 +52,7 @@ def layout():
                                 clearable=False,
                             ),
                         ],
-                        width=3,
+                        width=2,
                     ),
                     dbc.Col(
                         [
@@ -62,7 +63,18 @@ def layout():
                                 value="all",
                             ),
                         ],
-                        width=3,
+                        width=2,
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Label("Subcategory"),
+                            dcc.Dropdown(
+                                id="subcategory-filter",
+                                options=subcat_options,
+                                value="all",
+                            ),
+                        ],
+                        width=2,
                     ),
                     dbc.Col(
                         [
@@ -70,7 +82,7 @@ def layout():
                             dbc.Input(
                                 id="search-filter",
                                 type="text",
-                                placeholder="Search merchant name...",
+                                placeholder="Search across all fields...",
                                 debounce=True,
                             ),
                         ],
@@ -81,7 +93,10 @@ def layout():
                             dbc.Label("Options"),
                             dbc.Checklist(
                                 id="show-quorum",
-                                options=[{"label": " Show Quorum", "value": "show"}],
+                                options=[
+                                    {"label": " Show Quorum", "value": "show"},
+                                    {"label": " Uncategorized Only", "value": "uncat"},
+                                ],
                                 value=["show"],
                                 switch=True,
                             ),
@@ -92,11 +107,14 @@ def layout():
                         [
                             dbc.Label(" "),
                             dbc.Button(
-                                "🔄 Refresh",
+                                [
+                                    html.I(className="bi bi-arrow-clockwise me-2"),
+                                    "Refresh",
+                                ],
                                 id="refresh-btn",
                                 color="secondary",
                                 outline=True,
-                                # className="w-100",
+                                className="w-100",
                             ),
                         ],
                         width=1,
@@ -124,7 +142,7 @@ def layout():
                                 color="secondary",
                                 outline=True,
                             ),
-                            dbc.Button("Save", id="save-edit", color="primary"),
+                            dbc.Button("Save Changes", id="save-edit", color="primary"),
                         ]
                     ),
                 ],
@@ -132,7 +150,36 @@ def layout():
                 size="lg",
                 is_open=False,
             ),
+            dbc.Modal(
+                [
+                    dbc.ModalHeader("Confirm Delete"),
+                    dbc.ModalBody(
+                        [
+                            html.P("Are you sure you want to delete this transaction?"),
+                            html.Div(id="delete-transaction-info"),
+                        ]
+                    ),
+                    dbc.ModalFooter(
+                        [
+                            dbc.Button(
+                                "Cancel",
+                                id="cancel-delete",
+                                color="secondary",
+                            ),
+                            dbc.Button(
+                                "Delete",
+                                id="confirm-delete",
+                                color="danger",
+                            ),
+                        ]
+                    ),
+                ],
+                id="delete-modal",
+                is_open=False,
+            ),
             dcc.Store(id="subcat-options", data=subcat_options),
+            dcc.Store(id="delete-uuid-store"),
+            dcc.Store(id="refresh-trigger", data=0),
         ],
         fluid=True,
     )
@@ -140,7 +187,7 @@ def layout():
 
 def generate_month_options():
     """Generate last 12 months for dropdown"""
-    options = []
+    options = [{"label": "All Time", "value": "all"}]
     today = datetime.now()
 
     for i in range(12):
@@ -163,12 +210,16 @@ def generate_month_options():
     [
         Input("month-filter", "value"),
         Input("category-filter", "value"),
+        Input("subcategory-filter", "value"),
         Input("search-filter", "value"),
         Input("show-quorum", "value"),
         Input("refresh-btn", "n_clicks"),
+        Input("refresh-trigger", "data"),
     ],
 )
-def update_transactions_table(month, category, search, show_quorum, n_clicks):
+def update_transactions_table(
+    month, category, subcategory, search, show_quorum, n_clicks, refresh_trigger
+):
     """Update transactions table based on filters"""
 
     query = """
@@ -180,6 +231,7 @@ def update_transactions_table(month, category, search, show_quorum, n_clicks):
             amount_eur,
             category,
             subcategory,
+            budget_type,
             is_quorum,
             card_number
         FROM transactions
@@ -187,7 +239,7 @@ def update_transactions_table(month, category, search, show_quorum, n_clicks):
     """
     params = []
 
-    if month:
+    if month and month != "all":
         year, mon = month.split("-")
         first_day = f"{year}-{mon}-01"
         last_day = f"{year}-{mon}-{calendar.monthrange(int(year), int(mon))[1]}"
@@ -198,17 +250,34 @@ def update_transactions_table(month, category, search, show_quorum, n_clicks):
         query += " AND category = ?"
         params.append(category)
 
+    if subcategory and subcategory != "all":
+        query += " AND subcategory = ?"
+        params.append(subcategory)
+
     if search:
-        query += " AND LOWER(description) LIKE ?"
-        params.append(f"%{search.lower()}%")
+        query += """ AND (
+            LOWER(description) LIKE ? OR
+            LOWER(category) LIKE ? OR
+            LOWER(subcategory) LIKE ? OR
+            LOWER(budget_type) LIKE ? OR
+            CAST(amount_usd AS TEXT) LIKE ? OR
+            CAST(amount_eur AS TEXT) LIKE ?
+        )"""
+        search_term = f"%{search.lower()}%"
+        params.extend([search_term] * 6)
 
     if "show" not in show_quorum:
         query += " AND is_quorum = 0"
 
-    query += " ORDER BY date DESC LIMIT 500"
+    if "uncat" in show_quorum:
+        query += " AND subcategory = 'Uncategorized'"
+
+    query += " ORDER BY date DESC LIMIT 1000"
 
     df = db.fetch_df(query, tuple(params) if params else None)
-    df["is_quorum"] = df["is_quorum"].astype(int).astype(bool)
+
+    if not df.empty:
+        df["is_quorum"] = df["is_quorum"].astype(int).astype(bool)
 
     stats = create_stats_row(df)
 
@@ -223,7 +292,9 @@ def update_transactions_table(month, category, search, show_quorum, n_clicks):
 def create_stats_row(df):
     """Create statistics row"""
     if df.empty:
-        return html.P("No data", className="text-muted")
+        return dbc.Alert(
+            "No transactions match your filters", color="info", className="mb-0"
+        )
 
     total_count = len(df)
     your_count = (~df["is_quorum"]).sum()
@@ -232,6 +303,8 @@ def create_stats_row(df):
     your_eur = df[~df["is_quorum"]]["amount_eur"].sum()
     your_usd = df[~df["is_quorum"]]["amount_usd"].sum()
     quorum_usd = df[df["is_quorum"]]["amount_usd"].sum()
+
+    uncategorized = (df["subcategory"] == "Uncategorized").sum()
 
     return dbc.Row(
         [
@@ -247,7 +320,7 @@ def create_stats_row(df):
                     html.Small("Your Transactions", className="text-muted d-block"),
                     html.Strong(f"{your_count} (€{your_eur:,.2f})"),
                 ],
-                width=3,
+                width=2,
             ),
             dbc.Col(
                 [
@@ -256,12 +329,22 @@ def create_stats_row(df):
                         f"{quorum_count} (${quorum_usd:,.2f})", className="text-success"
                     ),
                 ],
-                width=3,
+                width=2,
             ),
             dbc.Col(
                 [
                     html.Small("Total USD", className="text-muted d-block"),
                     html.Strong(f"${your_usd + quorum_usd:,.2f}"),
+                ],
+                width=2,
+            ),
+            dbc.Col(
+                [
+                    html.Small("Uncategorized", className="text-muted d-block"),
+                    html.Strong(
+                        str(uncategorized),
+                        className="text-warning" if uncategorized > 0 else "",
+                    ),
                 ],
                 width=2,
             ),
@@ -277,10 +360,10 @@ def create_transactions_table(df):
             [
                 html.Th("Date", style={"width": "100px"}),
                 html.Th("Merchant"),
-                html.Th("Category", style={"width": "150px"}),
-                html.Th("Subcategory", style={"width": "150px"}),
+                html.Th("Category", style={"width": "140px"}),
+                html.Th("Subcategory", style={"width": "140px"}),
                 html.Th("Amount", className="text-end", style={"width": "120px"}),
-                html.Th("Actions", className="text-center", style={"width": "100px"}),
+                html.Th("Actions", className="text-center", style={"width": "120px"}),
             ]
         )
     )
@@ -312,9 +395,13 @@ def create_transactions_table(df):
                         ]
                     ),
                     html.Td(
-                        dbc.Badge(row["category"], color=badge_color, className="me-1")
+                        dbc.Badge(
+                            row["category"] or "N/A",
+                            color=badge_color,
+                            className="me-1",
+                        )
                     ),
-                    html.Td(row["subcategory"]),
+                    html.Td(row["subcategory"] or "N/A"),
                     html.Td(html.Strong(amount_display), className="text-end"),
                     html.Td(
                         [
@@ -388,10 +475,13 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
 
     tx_data = tx.iloc[0]
 
-    suggestions = categorizer.categorize(tx_data["description"])
+    suggestions = categorizer.categorize(tx_data["description"], tx_data["is_quorum"])
     suggestion_text = ""
-    if suggestions["confidence"] > 0:
-        suggestion_text = f"Suggested: {suggestions['subcategory']} ({suggestions['confidence']}% confidence)"
+    if (
+        suggestions["confidence"] > 0
+        and suggestions["subcategory"] != tx_data["subcategory"]
+    ):
+        suggestion_text = f"💡 Suggested: {suggestions['subcategory']} ({suggestions['confidence']}% confidence)"
 
     form = [
         dbc.Row(
@@ -425,9 +515,29 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
                             value=tx_data["subcategory"],
                             clearable=False,
                         ),
-                        html.Small(suggestion_text, className="text-info")
+                        html.Small(suggestion_text, className="text-info mt-1")
                         if suggestion_text
                         else html.Div(),
+                    ]
+                )
+            ],
+            className="mb-3",
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Checklist(
+                            id="apply-mapping-checkbox",
+                            options=[
+                                {
+                                    "label": " Apply this mapping to all similar merchants",
+                                    "value": "apply",
+                                }
+                            ],
+                            value=[],
+                            switch=True,
+                        )
                     ]
                 )
             ]
@@ -439,18 +549,28 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
 
 
 @callback(
-    Output("edit-modal", "is_open", allow_duplicate=True),
+    [
+        Output("edit-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data"),
+    ],
     [Input("save-edit", "n_clicks"), Input("cancel-edit", "n_clicks")],
-    [State("edit-uuid", "data"), State("edit-subcategory", "value")],
+    [
+        State("edit-uuid", "data"),
+        State("edit-subcategory", "value"),
+        State("apply-mapping-checkbox", "value"),
+        State("refresh-trigger", "data"),
+    ],
     prevent_initial_call=True,
 )
-def save_transaction_edit(save_clicks, cancel_clicks, uuid, subcategory):
+def save_transaction_edit(
+    save_clicks, cancel_clicks, uuid, subcategory, apply_mapping, current_trigger
+):
     """Save transaction edits"""
     if not ctx.triggered_id:
-        return False
+        raise PreventUpdate
 
     if ctx.triggered_id == "cancel-edit":
-        return False
+        return False, current_trigger
 
     if ctx.triggered_id == "save-edit" and subcategory:
         category_info = db.fetch_all(
@@ -470,7 +590,8 @@ def save_transaction_edit(save_clicks, cancel_clicks, uuid, subcategory):
                 UPDATE transactions
                 SET subcategory = ?,
                     category = ?,
-                    budget_type = ?
+                    budget_type = ?,
+                    updated_at = CURRENT_TIMESTAMP
                 WHERE uuid = ?
             """,
                 (subcategory, category, budget_type, uuid),
@@ -481,4 +602,104 @@ def save_transaction_edit(save_clicks, cancel_clicks, uuid, subcategory):
             )[0][0]
             categorizer.learn_from_transaction(desc, subcategory)
 
-    return False
+            if "apply" in apply_mapping:
+                db.write_execute(
+                    """
+                    UPDATE transactions
+                    SET subcategory = ?,
+                        category = ?,
+                        budget_type = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE description = ?
+                        AND subcategory != ?
+                """,
+                    (subcategory, category, budget_type, desc, subcategory),
+                )
+
+        return False, current_trigger + 1
+
+    return False, current_trigger
+
+
+@callback(
+    [
+        Output("delete-modal", "is_open"),
+        Output("delete-transaction-info", "children"),
+        Output("delete-uuid-store", "data"),
+    ],
+    [Input({"type": "delete-btn", "index": ALL}, "n_clicks")],
+    [
+        State({"type": "delete-btn", "index": ALL}, "id"),
+        State("delete-modal", "is_open"),
+    ],
+    prevent_initial_call=True,
+)
+def toggle_delete_modal(n_clicks, btn_ids, is_open):
+    """Open delete confirmation modal"""
+    if not any(n_clicks):
+        return is_open, [], None
+
+    button_id = ctx.triggered_id
+    if not button_id:
+        return is_open, [], None
+
+    uuid = button_id["index"]
+
+    tx = db.fetch_df(
+        """
+        SELECT date, description, amount_usd, amount_eur, is_quorum
+        FROM transactions
+        WHERE uuid = ?
+    """,
+        (uuid,),
+    )
+
+    if tx.empty:
+        return False, [], None
+
+    tx_data = tx.iloc[0]
+
+    amount_display = (
+        f"€{tx_data['amount_eur']:.2f}"
+        if not tx_data["is_quorum"]
+        else f"${tx_data['amount_usd']:.2f}"
+    )
+
+    info = dbc.Card(
+        dbc.CardBody(
+            [
+                html.P([html.Strong("Date: "), tx_data["date"]]),
+                html.P([html.Strong("Merchant: "), tx_data["description"]]),
+                html.P([html.Strong("Amount: "), amount_display]),
+            ]
+        ),
+        color="danger",
+        outline=True,
+    )
+
+    return True, info, uuid
+
+
+@callback(
+    [
+        Output("delete-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data", allow_duplicate=True),
+    ],
+    [Input("confirm-delete", "n_clicks"), Input("cancel-delete", "n_clicks")],
+    [State("delete-uuid-store", "data"), State("refresh-trigger", "data")],
+    prevent_initial_call=True,
+)
+def confirm_delete_transaction(confirm_clicks, cancel_clicks, uuid, current_trigger):
+    """Confirm and execute transaction deletion"""
+    if not ctx.triggered_id:
+        raise PreventUpdate
+
+    if ctx.triggered_id == "cancel-delete":
+        return False, current_trigger
+
+    if ctx.triggered_id == "confirm-delete" and uuid:
+        db.write_execute("DELETE FROM transactions WHERE uuid = ?", (uuid,))
+
+        return False, current_trigger + 1
+
+    return False, current_trigger
