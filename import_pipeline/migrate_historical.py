@@ -10,6 +10,22 @@ import pandas as pd
 from database.db import db
 from import_pipeline.exchange_rates import exchange_rate_fetcher
 
+EU_BILL_PATTERNS = [
+    "RENT",
+    "O2",
+    "D-TICKET",
+    "RUNDFUNK",
+]
+
+
+def is_eu_bill(description: str) -> bool:
+    """Check if transaction is an EU bill (actually in EUR)"""
+    desc_upper = description.upper()
+    for pattern in EU_BILL_PATTERNS:
+        if pattern in desc_upper:
+            return True
+    return False
+
 
 def generate_uuid(row):
     """Generate UUID from transaction data"""
@@ -60,6 +76,15 @@ def migrate_historical_data(csv_path: str):
     quorum_count = df["is_quorum"].sum()
     print(f"   Found {quorum_count} Quorum transactions")
 
+    print("\n🇪🇺 Identifying EU bills (ACTUAL EUR amounts)...")
+    df["is_eu_bill"] = df["DESCRIPTION"].apply(is_eu_bill)
+    eu_bill_count = df["is_eu_bill"].sum()
+    print(f"   Found {eu_bill_count} EU bill transactions")
+    if eu_bill_count > 0:
+        print("   These are the ONLY transactions where CSV amount is actually EUR:")
+        for desc in df[df["is_eu_bill"]]["DESCRIPTION"].unique()[:5]:
+            print(f"      • {desc}")
+
     print("\n📋 Mapping categories...")
     category_map = get_category_mappings()
 
@@ -88,8 +113,12 @@ def migrate_historical_data(csv_path: str):
         print("✅ All budget_type values are valid")
 
     print("\n💱 Processing currency...")
-    non_quorum = df[~df["is_quorum"]]
-    unique_dates = non_quorum["date_parsed"].unique()
+    print("   CRITICAL: CSV 'AMOUNT €' is misleading!")
+    print("   • Most values are USD (what Capital One charged)")
+    print("   • Only EU bills are actual EUR")
+
+    non_quorum_non_eu = df[~df["is_quorum"] & ~df["is_eu_bill"]]
+    unique_dates = non_quorum_non_eu["date_parsed"].unique()
 
     if len(unique_dates) > 0:
         print(f"   Fetching exchange rates for {len(unique_dates)} unique dates...")
@@ -97,32 +126,94 @@ def migrate_historical_data(csv_path: str):
 
         df["exchange_rate"] = df.apply(
             lambda row: rates.get(row["date_parsed"].strftime("%Y-%m-%d"))
-            if not row["is_quorum"]
+            if not row["is_quorum"] and not row["is_eu_bill"]
             else None,
             axis=1,
         )
     else:
         df["exchange_rate"] = None
 
-    df["original_currency"] = df["is_quorum"].map({True: "USD", False: "EUR"})
-    df["original_amount"] = df["amount_parsed"]
+    print("\n🔢 Calculating correct amounts...")
+    print("   Logic:")
+    print("   • Quorum: amount_parsed is USD → store as-is")
+    print("   • EU Bills: amount_parsed is EUR → store as-is")
+    print("   • Regular: amount_parsed is USD → calculate EUR = USD / rate")
 
-    df["amount_usd"] = df["amount_parsed"]
+    def calculate_original_amount(row):
+        if row["is_quorum"]:
+            return row["amount_parsed"]
+        elif row["is_eu_bill"]:
+            return row["amount_parsed"]
+        else:
+            if pd.notna(row["exchange_rate"]) and row["exchange_rate"] > 0:
+                return row["amount_parsed"] / row["exchange_rate"]
+            else:
+                return row["amount_parsed"]
 
-    df["amount_eur"] = df.apply(
-        lambda row: (
-            None
-            if row["is_quorum"]
-            else (
-                row["amount_parsed"] / row["exchange_rate"]
-                if pd.notna(row["exchange_rate"])
-                else None
-            )
-        ),
-        axis=1,
-    )
+    df["original_amount"] = df.apply(calculate_original_amount, axis=1)
+
+    def get_original_currency(row):
+        if row["is_quorum"]:
+            return "USD"
+        else:
+            return "EUR"
+
+    df["original_currency"] = df.apply(get_original_currency, axis=1)
+
+    def calculate_amount_eur(row):
+        if row["is_quorum"]:
+            return None
+        elif row["is_eu_bill"]:
+            return row["amount_parsed"]
+        else:
+            return row["original_amount"]
+
+    df["amount_eur"] = df.apply(calculate_amount_eur, axis=1)
+
+    def calculate_amount_usd(row):
+        if row["is_quorum"]:
+            return row["amount_parsed"]
+        elif row["is_eu_bill"]:
+            return None
+        else:
+            return row["amount_parsed"]
+
+    df["amount_usd"] = df.apply(calculate_amount_usd, axis=1)
 
     print("\n💾 Preparing data for database...")
+
+    print("\n📊 Examples of each transaction type:")
+
+    regular_example = df[~df["is_quorum"] & ~df["is_eu_bill"]].head(1)
+    if not regular_example.empty:
+        row = regular_example.iloc[0]
+        print(f"\n   Regular EUR Purchase: {row['DESCRIPTION'][:40]}")
+        print(f"      CSV amount (USD): ${row['amount_parsed']:.2f}")
+        print(
+            f"      Calculated EUR: €{row['amount_eur']:.2f} (${row['amount_parsed']:.2f} / {row['exchange_rate']:.4f})"
+        )
+        print(
+            f"      Stored: original_amount={row['original_amount']:.2f} EUR, amount_usd={row['amount_usd']:.2f}"
+        )
+
+    eu_example = df[df["is_eu_bill"]].head(1)
+    if not eu_example.empty:
+        row = eu_example.iloc[0]
+        print(f"\n   EU Bill: {row['DESCRIPTION'][:40]}")
+        print(f"      CSV amount (EUR): €{row['amount_parsed']:.2f}")
+        print(
+            f"      Stored: original_amount={row['original_amount']:.2f} EUR, amount_usd=NULL"
+        )
+
+    quorum_example = df[df["is_quorum"]].head(1)
+    if not quorum_example.empty:
+        row = quorum_example.iloc[0]
+        print(f"\n   Quorum: {row['DESCRIPTION'][:40]}")
+        print(f"      CSV amount (USD): ${row['amount_parsed']:.2f}")
+        print(
+            f"      Stored: original_amount={row['original_amount']:.2f} USD, amount_eur=NULL"
+        )
+
     transactions = []
 
     for _, row in df.iterrows():
@@ -193,9 +284,6 @@ def migrate_historical_data(csv_path: str):
                 if len(errors) <= 5:
                     print(f"❌ Error inserting transaction: {e}")
                     print(f"   Transaction: {tx['date']} - {tx['description']}")
-                    print(
-                        f"   Budget Type: {tx['budget_type']}, Is Quorum: {tx['is_quorum']}"
-                    )
 
     if len(errors) > 5:
         print(f"   ... and {len(errors) - 5} more errors")
@@ -270,10 +358,28 @@ def print_summary_stats():
         "SELECT MIN(date), MAX(date) FROM transactions"
     ).fetchone()
 
+    quorum = conn.execute(
+        "SELECT COUNT(*) FROM transactions WHERE is_quorum = 1"
+    ).fetchone()[0]
+
+    eu_bills = conn.execute("""
+        SELECT COUNT(*) FROM transactions 
+        WHERE is_quorum = 0 
+        AND amount_usd IS NULL 
+        AND amount_eur IS NOT NULL
+    """).fetchone()[0]
+
+    regular = conn.execute("""
+        SELECT COUNT(*) FROM transactions 
+        WHERE is_quorum = 0 
+        AND amount_usd IS NOT NULL 
+        AND amount_eur IS NOT NULL
+    """).fetchone()[0]
+
     totals = conn.execute("""
         SELECT 
             SUM(CASE WHEN is_quorum = 0 THEN amount_eur ELSE 0 END) as total_eur,
-            SUM(amount_usd) as total_usd,
+            SUM(CASE WHEN is_quorum = 0 AND amount_usd IS NOT NULL THEN amount_usd ELSE 0 END) as your_usd,
             SUM(CASE WHEN is_quorum = 1 THEN amount_usd ELSE 0 END) as quorum_usd
         FROM transactions
     """).fetchone()
@@ -281,11 +387,19 @@ def print_summary_stats():
     print("\n📊 SUMMARY:")
     print(f"   Total transactions: {total}")
     print(f"   Date range: {date_range[0]} to {date_range[1]}")
-    print(f"   Your expenses (original EUR): €{totals[0]:,.2f}")
-    print(f"   Your expenses (bank USD): ${totals[1] - totals[2]:,.2f}")
-    print(f"   Quorum (reimbursable USD): ${totals[2]:,.2f}")
-    print(f"   Total credit card charges: ${totals[1]:,.2f}")
-    print(f"   Net you pay (after Quorum): ${totals[1] - totals[2]:,.2f}")
+    print("\n   Transaction Types:")
+    print(f"   • Regular EUR purchases: {regular}")
+    print("     (CSV shows USD, calculated EUR = USD / rate)")
+    print(f"   • EU Bills (actual EUR): {eu_bills}")
+    print("     (CSV shows EUR, stored as-is)")
+    print(f"   • Quorum (USD only): {quorum}")
+    print("     (CSV shows USD, stored as-is)")
+    print("\n   Financial Totals:")
+    print(f"   • Your EUR expenses: €{totals[0]:,.2f}")
+    print(f"   • Your credit card (USD): ${totals[1]:,.2f}")
+    print(f"   • Quorum (reimbursable): ${totals[2]:,.2f}")
+    print(f"   • Total credit card: ${totals[1] + totals[2]:,.2f}")
+    print(f"   • Net you pay (after Quorum): ${totals[1]:,.2f}")
 
 
 if __name__ == "__main__":

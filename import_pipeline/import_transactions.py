@@ -1,6 +1,7 @@
 """
 Transaction import orchestrator (SQLite)
 Handles the complete import workflow: CSV → Process → Categorize → Review → Import
+Handles EU bills (no conversion) and improved exchange rate logic
 """
 
 from typing import Dict, List, Tuple
@@ -92,6 +93,10 @@ class TransactionImporter:
         """
         Step 4: Fetch exchange rates for new transactions
 
+        IMPORTANT: EU bills and Quorum transactions do NOT need exchange rates
+        - EU bills: Already in EUR, will NOT be converted to USD
+        - Quorum: Already in USD, will NOT be converted to EUR
+
         Args:
             transactions: DataFrame with new transactions
 
@@ -102,11 +107,13 @@ class TransactionImporter:
         print("STEP 4: FETCH EXCHANGE RATES")
         print("=" * 60)
 
-        non_quorum = transactions[~transactions["IS_QUORUM"]]
-        unique_dates = non_quorum["DATE"].unique()
+        needs_rate = transactions[
+            ~transactions["IS_QUORUM"] & ~transactions["IS_EU_BILL"]
+        ]
+        unique_dates = needs_rate["DATE"].unique()
 
         if len(unique_dates) == 0:
-            print("   ℹ️  No exchange rates needed (all Quorum)")
+            print("   ℹ️  No exchange rates needed (all Quorum or EU bills)")
             transactions["EXCHANGE_RATE"] = None
             return transactions
 
@@ -121,30 +128,53 @@ class TransactionImporter:
             if rate:
                 rates[date_str] = rate
 
-        transactions["EXCHANGE_RATE"] = transactions.apply(
-            lambda row: rates.get(pd.to_datetime(row["DATE"]).strftime("%Y-%m-%d"))
-            if not row["IS_QUORUM"]
-            else None,
-            axis=1,
-        )
+        def get_exchange_rate(row):
+            if row["IS_QUORUM"] or row["IS_EU_BILL"]:
+                return None
+            return rates.get(pd.to_datetime(row["DATE"]).strftime("%Y-%m-%d"))
+
+        transactions["EXCHANGE_RATE"] = transactions.apply(get_exchange_rate, axis=1)
 
         missing_rates = transactions[
-            ~transactions["IS_QUORUM"] & transactions["EXCHANGE_RATE"].isna()
+            ~transactions["IS_QUORUM"]
+            & ~transactions["IS_EU_BILL"]
+            & transactions["EXCHANGE_RATE"].isna()
         ]
 
         if len(missing_rates) > 0:
             print(
-                f"   ⚠️  Warning: {len(missing_rates)} transactions missing exchange rates"
+                f"   ⚠️  Warning: {len(missing_rates)} regular EUR transactions missing exchange rates"
             )
             print("   These will be skipped during import")
         else:
-            print("   ✅ All exchange rates fetched")
+            print("   ✅ All required exchange rates fetched")
 
         return transactions
 
     def prepare_import(self, transactions: pd.DataFrame) -> pd.DataFrame:
         """
         Step 5: Prepare final data for import
+
+        CRITICAL FIX: The AMOUNT column from CSV is ALWAYS in USD (what Capital One charges)
+
+        Currency handling logic:
+        1. **Quorum** (USD native in Puerto Rico):
+           - original_amount: AMOUNT (USD)
+           - original_currency: 'USD'
+           - amount_usd: AMOUNT (as-is)
+           - amount_eur: NULL
+
+        2. **EU Bills** (EUR native, like rent/O2):
+           - original_amount: AMOUNT / exchange_rate (convert USD back to EUR)
+           - original_currency: 'EUR'
+           - amount_eur: AMOUNT / exchange_rate
+           - amount_usd: NULL (these don't appear on credit card)
+
+        3. **Regular EUR** (purchases in Germany):
+           - original_amount: AMOUNT / exchange_rate (convert USD back to EUR)
+           - original_currency: 'EUR'
+           - amount_eur: AMOUNT / exchange_rate
+           - amount_usd: AMOUNT (what CC charges)
 
         Args:
             transactions: DataFrame with categorized, de-duped transactions
@@ -156,20 +186,43 @@ class TransactionImporter:
         print("STEP 5: PREPARE FOR IMPORT")
         print("=" * 60)
 
-        transactions["AMOUNT_USD"] = transactions["AMOUNT"]
+        def calculate_original_amount(row):
+            if row["IS_QUORUM"]:
+                return row["AMOUNT"]
+            else:
+                if pd.notna(row["EXCHANGE_RATE"]):
+                    return row["AMOUNT"] / row["EXCHANGE_RATE"]
+                else:
+                    return row["AMOUNT"]
 
-        transactions["AMOUNT_EUR"] = transactions.apply(
-            lambda row: (
-                None
-                if row["IS_QUORUM"]
-                else (
-                    row["AMOUNT"] / row["EXCHANGE_RATE"]
-                    if pd.notna(row["EXCHANGE_RATE"])
-                    else None
-                )
-            ),
-            axis=1,
+        transactions["ORIGINAL_AMOUNT"] = transactions.apply(
+            calculate_original_amount, axis=1
         )
+
+        def get_original_currency(row):
+            return "USD" if row["IS_QUORUM"] else "EUR"
+
+        transactions["ORIGINAL_CURRENCY"] = transactions.apply(
+            get_original_currency, axis=1
+        )
+
+        def calculate_amount_eur(row):
+            if row["IS_QUORUM"]:
+                return None
+            else:
+                return row["ORIGINAL_AMOUNT"]
+
+        transactions["AMOUNT_EUR"] = transactions.apply(calculate_amount_eur, axis=1)
+
+        def calculate_amount_usd(row):
+            if row["IS_QUORUM"]:
+                return row["AMOUNT"]
+            elif row["IS_EU_BILL"]:
+                return None
+            else:
+                return row["AMOUNT"]
+
+        transactions["AMOUNT_USD"] = transactions.apply(calculate_amount_usd, axis=1)
 
         transactions.loc[
             transactions["IS_QUORUM"] & transactions["BUDGET_TYPE"].isna(),
@@ -198,11 +251,22 @@ class TransactionImporter:
         self.import_preview = transactions
 
         ready = transactions[
-            transactions["AMOUNT_USD"].notna()
-            & (transactions["IS_QUORUM"] | transactions["AMOUNT_EUR"].notna())
+            (transactions["IS_QUORUM"] & transactions["AMOUNT_USD"].notna())
+            | (transactions["IS_EU_BILL"] & transactions["AMOUNT_EUR"].notna())
+            | (
+                ~transactions["IS_QUORUM"]
+                & ~transactions["IS_EU_BILL"]
+                & transactions["AMOUNT_USD"].notna()
+                & transactions["AMOUNT_EUR"].notna()
+            )
         ]
 
         print(f"   ✅ Ready for import: {len(ready)}")
+        print(f"   • Quorum (USD): {(ready['IS_QUORUM']).sum()}")
+        print(f"   • EU Bills (EUR only): {(ready['IS_EU_BILL']).sum()}")
+        print(
+            f"   • Regular EUR (with USD): {(~ready['IS_QUORUM'] & ~ready['IS_EU_BILL']).sum()}"
+        )
         print(
             f"   ⚠️  Need manual categorization: {(transactions['CONFIDENCE'] == 0).sum()}"
         )
@@ -220,6 +284,8 @@ class TransactionImporter:
             "total": len(df),
             "new": len(df),
             "quorum": df["IS_QUORUM"].sum(),
+            "eu_bills": df["IS_EU_BILL"].sum(),
+            "regular_eur": (~df["IS_QUORUM"] & ~df["IS_EU_BILL"]).sum(),
             "auto_categorized": (df["CONFIDENCE"] > 0).sum(),
             "needs_review": (df["CONFIDENCE"] == 0).sum(),
             "total_usd": df["AMOUNT_USD"].sum(),
@@ -255,13 +321,18 @@ class TransactionImporter:
 
         for _, row in transactions.iterrows():
             try:
-                if pd.isna(row["AMOUNT_USD"]):
+                if row["IS_QUORUM"] and pd.isna(row["AMOUNT_USD"]):
                     skipped += 1
                     continue
 
-                if not row["IS_QUORUM"] and pd.isna(row["AMOUNT_EUR"]):
+                if row["IS_EU_BILL"] and pd.isna(row["AMOUNT_EUR"]):
                     skipped += 1
                     continue
+
+                if not row["IS_QUORUM"] and not row["IS_EU_BILL"]:
+                    if pd.isna(row["AMOUNT_EUR"]) or pd.isna(row["AMOUNT_USD"]):
+                        skipped += 1
+                        continue
 
                 db.write_execute(
                     """
@@ -275,12 +346,14 @@ class TransactionImporter:
                         str(row["UUID"]),
                         pd.to_datetime(row["DATE"]).strftime("%Y-%m-%d"),
                         str(row["DESCRIPTION"]),
-                        float(row["AMOUNT"]),
-                        "USD",
+                        float(row["ORIGINAL_AMOUNT"]),
+                        str(row["ORIGINAL_CURRENCY"]),
                         float(row["AMOUNT_EUR"])
                         if pd.notna(row["AMOUNT_EUR"])
                         else None,
-                        float(row["AMOUNT_USD"]),
+                        float(row["AMOUNT_USD"])
+                        if pd.notna(row["AMOUNT_USD"])
+                        else None,
                         float(row["EXCHANGE_RATE"])
                         if pd.notna(row["EXCHANGE_RATE"])
                         else None,
@@ -388,11 +461,11 @@ class TransactionImporter:
         print(
             f"   Date range: {preview['date_range'][0]} to {preview['date_range'][1]}"
         )
-        print(f"   Your transactions: {preview['total'] - preview['quorum']}")
-        print(f"   Quorum transactions: {preview['quorum']}")
+        print(f"   Your transactions (EUR): {preview['regular_eur']}")
+        print(f"   EU Bills (EUR, no conversion): {preview['eu_bills']}")
+        print(f"   Quorum transactions (USD): {preview['quorum']}")
         print(f"   Auto-categorized: {preview['auto_categorized']}")
         print(f"   Need review: {preview['needs_review']}")
-        print(f"   Total amount: ${preview['total_usd']:,.2f}")
 
         if not auto_confirm:
             print("\n" + "=" * 60)
