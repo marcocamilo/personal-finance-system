@@ -40,6 +40,10 @@ def get_current_budget(year: int, month: int):
     )
 
     if not existing.empty:
+        template_id = db.fetch_one(
+            "SELECT id FROM budget_templates WHERE is_active = 1"
+        )[0]
+
         expense_cats = db.fetch_df("""
             SELECT DISTINCT budget_type, category
             FROM categories
@@ -47,10 +51,6 @@ def get_current_budget(year: int, month: int):
             AND budget_type IN ('Needs', 'Wants', 'Unexpected', 'Additional')
             ORDER BY budget_type, category
         """)
-
-        template_id = db.fetch_one(
-            "SELECT id FROM budget_templates WHERE is_active = 1"
-        )[0]
 
         existing_keys = set(zip(existing["budget_type"], existing["category"]))
         missing = []
@@ -66,6 +66,26 @@ def get_current_budget(year: int, month: int):
                         "template_id": template_id,
                     }
                 )
+
+        if ("Savings", "Savings") not in existing_keys:
+            template_savings = db.fetch_one(
+                "SELECT SUM(budgeted_amount) FROM template_categories WHERE template_id = ? AND budget_type = 'Savings'",
+                (template_id,),
+            )
+            savings_budget = (
+                template_savings[0]
+                if template_savings and template_savings[0]
+                else 1000.0
+            )
+
+            missing.append(
+                {
+                    "budget_type": "Savings",
+                    "category": "Savings",
+                    "budgeted_amount": savings_budget,
+                    "template_id": template_id,
+                }
+            )
 
         if missing:
             import pandas as pd
@@ -117,9 +137,13 @@ def get_current_budget(year: int, month: int):
 
     income_budgeted = template_budgets[template_budgets["budget_type"] == "Income"]
 
+    savings_budgeted = template_budgets[template_budgets["budget_type"] == "Savings"]
+
     import pandas as pd
 
-    merged = pd.concat([income_budgeted, expense_merged], ignore_index=True)
+    merged = pd.concat(
+        [income_budgeted, savings_budgeted, expense_merged], ignore_index=True
+    )
 
     for _, row in merged.iterrows():
         db.write_execute(
@@ -506,19 +530,8 @@ def create_summary_cards(df):
     income_actual = df[df["budget_type"] == "Income"]["actual_amount"].sum()
 
     savings_budget = df[df["budget_type"] == "Savings"]["budgeted_amount"].sum()
-    if savings_budget == 0:
-        template_id = db.fetch_one(
-            "SELECT id FROM budget_templates WHERE is_active = 1"
-        )
-        if template_id:
-            template_savings = db.fetch_one(
-                "SELECT SUM(budgeted_amount) FROM template_categories WHERE template_id = ? AND budget_type = 'Savings'",
-                (template_id[0],),
-            )
-            if template_savings and template_savings[0]:
-                savings_budget = template_savings[0]
-
     savings_actual = df[df["budget_type"] == "Savings"]["actual_amount"].sum()
+
     needs_budget = df[df["budget_type"] == "Needs"]["budgeted_amount"].sum()
     needs_actual = df[df["budget_type"] == "Needs"]["actual_amount"].sum()
     wants_budget = df[df["budget_type"] == "Wants"]["budgeted_amount"].sum()
@@ -888,17 +901,7 @@ def create_compact_budget_section(type_df, budget_type, year, month):
             allocations["actual_amount"].sum() if not allocations.empty else 0
         )
 
-        template_id = db.fetch_one(
-            "SELECT id FROM budget_templates WHERE is_active = 1"
-        )
-        budgeted = 0
-        if template_id:
-            template_savings = db.fetch_one(
-                "SELECT SUM(budgeted_amount) FROM template_categories WHERE template_id = ? AND budget_type = 'Savings'",
-                (template_id[0],),
-            )
-            if template_savings and template_savings[0]:
-                budgeted = template_savings[0]
+        budgeted = type_df["budgeted_amount"].sum() if not type_df.empty else 0
 
         allocation_rows = []
         for _, alloc in allocations.iterrows():
