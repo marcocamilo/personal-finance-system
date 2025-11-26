@@ -142,7 +142,6 @@ def get_current_budget(year: int, month: int):
     expense_merged["budgeted_amount"] = expense_merged["budgeted_amount"].fillna(0)
 
     income_budgeted = template_budgets[template_budgets["budget_type"] == "Income"]
-
     savings_budgeted = template_budgets[template_budgets["budget_type"] == "Savings"]
 
     import pandas as pd
@@ -196,6 +195,7 @@ def get_savings_allocations(year: int, month: int):
         SELECT 
             sa.bucket_id,
             sb.name as bucket_name,
+            sb.currency,
             sa.allocated_amount,
             sa.actual_amount,
             sa.is_allocated
@@ -211,7 +211,6 @@ def get_savings_allocations(year: int, month: int):
 
 
 def get_actual_spending(year: int, month: int):
-    """Get actual spending for the month - AGGREGATED BY CATEGORY"""
     first_day = f"{year}-{month:02d}-01"
     last_day = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]}"
 
@@ -238,14 +237,18 @@ def layout():
     today = datetime.now()
     year = today.year
     month = today.month
-    month_name = calendar.month_name[month]
-
-    active_template = db.fetch_one(
-        "SELECT name FROM budget_templates WHERE is_active = 1"
-    )[0]
 
     templates = db.fetch_all("SELECT id, name FROM budget_templates ORDER BY name")
     template_options = [{"label": t[1], "value": t[0]} for t in templates]
+
+    active_template_row = db.fetch_one(
+        "SELECT id FROM budget_templates WHERE is_active = 1"
+    )
+    active_template_id = (
+        active_template_row[0]
+        if active_template_row
+        else (templates[0][0] if templates else 1)
+    )
 
     return dbc.Container(
         [
@@ -254,10 +257,7 @@ def layout():
                     dbc.Col(
                         [
                             html.H2(id="budget-page-title", className="mb-0"),
-                            html.P(
-                                id="budget-active-template",
-                                className="text-muted",
-                            ),
+                            html.P(id="budget-active-template", className="text-muted"),
                         ],
                         width=8,
                     ),
@@ -303,9 +303,7 @@ def layout():
                                                             dcc.Dropdown(
                                                                 id="template-selector",
                                                                 options=template_options,
-                                                                value=db.fetch_one(
-                                                                    "SELECT id FROM budget_templates WHERE is_active = 1"
-                                                                )[0],
+                                                                value=active_template_id,
                                                                 clearable=False,
                                                             ),
                                                         ],
@@ -438,8 +436,8 @@ def layout():
                         [
                             dbc.Button(
                                 "Close", id="close-streams-modal", color="secondary"
-                            ),
-                        ]
+                            )
+                        ],
                     ),
                 ],
                 id="manage-streams-modal",
@@ -499,14 +497,13 @@ def update_budget_view(year, month):
     actual_income_amount, income_count = get_actual_income(year, month)
 
     savings_allocations = get_savings_allocations(year, month)
-    savings_budgeted = savings_allocations["allocated_amount"].sum()
-    savings_actual = savings_allocations["actual_amount"].sum()
-
-    merged = budget_df.merge(
-        actual_df,
-        on=["budget_type", "category"],
-        how="left",
+    savings_actual = (
+        savings_allocations["actual_amount"].sum()
+        if not savings_allocations.empty
+        else 0
     )
+
+    merged = budget_df.merge(actual_df, on=["budget_type", "category"], how="left")
     merged["actual_amount"] = merged["actual_amount"].fillna(0)
     merged["transaction_count"] = merged["transaction_count"].fillna(0).astype(int)
 
@@ -514,7 +511,6 @@ def update_budget_view(year, month):
         actual_income_amount
     )
     merged.loc[merged["budget_type"] == "Income", "transaction_count"] = income_count
-
     merged.loc[merged["budget_type"] == "Savings", "actual_amount"] = savings_actual
 
     summary = create_summary_cards(merged)
@@ -525,8 +521,12 @@ def update_budget_view(year, month):
 
     active_template = db.fetch_one(
         "SELECT name FROM budget_templates WHERE is_active = 1"
-    )[0]
-    template_text = f"Active Template: {active_template}"
+    )
+    template_text = (
+        f"Active Template: {active_template[0]}"
+        if active_template
+        else "No active template"
+    )
 
     return summary, details, title, template_text
 
@@ -542,6 +542,7 @@ def create_summary_cards(df):
     needs_actual = df[df["budget_type"] == "Needs"]["actual_amount"].sum()
     wants_budget = df[df["budget_type"] == "Wants"]["budgeted_amount"].sum()
     wants_actual = df[df["budget_type"] == "Wants"]["actual_amount"].sum()
+
     total_budget = savings_budget + needs_budget + wants_budget
     total_actual = savings_actual + needs_actual + wants_actual
     remaining = income_actual - total_actual
@@ -549,156 +550,115 @@ def create_summary_cards(df):
     return dbc.Row(
         [
             dbc.Col(
-                [
-                    dbc.Card(
+                dbc.Card(
+                    dbc.CardBody(
                         [
-                            dbc.CardBody(
-                                [
-                                    html.H6("Income", className="text-muted mb-2"),
-                                    html.H3(
-                                        f"€{income_actual:,.2f}",
-                                        className="mb-0 text-success"
-                                        if remaining >= 0
-                                        else "mb-0 text-muted",
-                                    ),
-                                    html.Small(
-                                        f"of €{income_budget:,.2f}",
-                                        className="text-muted",
-                                    ),
-                                    create_mini_progress_bar(
-                                        income_actual, income_budget
-                                    ),
-                                ]
-                            )
-                        ],
-                        className="h-100",
-                        color="success" if income_actual >= income_budget else "muted",
-                        outline=True,
-                    )
-                ],
+                            html.H6("Income", className="text-muted mb-2"),
+                            html.H3(
+                                f"€{income_actual:,.2f}",
+                                className="mb-0 text-success"
+                                if income_actual >= income_budget
+                                else "mb-0 text-muted",
+                            ),
+                            html.Small(
+                                f"of €{income_budget:,.2f}", className="text-muted"
+                            ),
+                            create_mini_progress_bar(income_actual, income_budget),
+                        ]
+                    ),
+                    className="h-100",
+                    color="success" if income_actual >= income_budget else "muted",
+                    outline=True,
+                ),
                 width=2,
             ),
             dbc.Col(
-                [
-                    dbc.Card(
+                dbc.Card(
+                    dbc.CardBody(
                         [
-                            dbc.CardBody(
-                                [
-                                    html.H6("Savings", className="text-muted mb-2"),
-                                    html.H4(
-                                        f"€{savings_actual:,.2f}", className="mb-0"
-                                    ),
-                                    html.Small(
-                                        f"of €{savings_budget:,.2f}",
-                                        className="text-muted",
-                                    ),
-                                    create_mini_progress_bar(
-                                        savings_actual, savings_budget
-                                    ),
-                                ]
-                            )
-                        ],
-                        className="h-100",
-                        color="muted" if savings_actual != 0 else "danger",
-                        outline=True,
-                    )
-                ],
+                            html.H6("Savings", className="text-muted mb-2"),
+                            html.H4(f"€{savings_actual:,.2f}", className="mb-0"),
+                            html.Small(
+                                f"of €{savings_budget:,.2f}", className="text-muted"
+                            ),
+                            create_mini_progress_bar(savings_actual, savings_budget),
+                        ]
+                    ),
+                    className="h-100",
+                    color="muted" if savings_actual != 0 else "danger",
+                    outline=True,
+                ),
                 width=2,
             ),
             dbc.Col(
-                [
-                    dbc.Card(
+                dbc.Card(
+                    dbc.CardBody(
                         [
-                            dbc.CardBody(
-                                [
-                                    html.H6("Needs", className="text-muted mb-2"),
-                                    html.H4(f"€{needs_actual:,.2f}", className="mb-0"),
-                                    html.Small(
-                                        f"of €{needs_budget:,.2f}",
-                                        className="text-muted",
-                                    ),
-                                    create_mini_progress_bar(
-                                        needs_actual, needs_budget
-                                    ),
-                                ]
-                            )
-                        ],
-                        className="h-100",
-                        color="muted" if needs_actual <= needs_budget else "danger",
-                        outline=True,
-                    )
-                ],
+                            html.H6("Needs", className="text-muted mb-2"),
+                            html.H4(f"€{needs_actual:,.2f}", className="mb-0"),
+                            html.Small(
+                                f"of €{needs_budget:,.2f}", className="text-muted"
+                            ),
+                            create_mini_progress_bar(needs_actual, needs_budget),
+                        ]
+                    ),
+                    className="h-100",
+                    color="muted" if needs_actual <= needs_budget else "danger",
+                    outline=True,
+                ),
                 width=2,
             ),
             dbc.Col(
-                [
-                    dbc.Card(
+                dbc.Card(
+                    dbc.CardBody(
                         [
-                            dbc.CardBody(
-                                [
-                                    html.H6("Wants", className="text-muted mb-2"),
-                                    html.H4(f"€{wants_actual:,.2f}", className="mb-0"),
-                                    html.Small(
-                                        f"of €{wants_budget:,.2f}",
-                                        className="text-muted",
-                                    ),
-                                    create_mini_progress_bar(
-                                        wants_actual, wants_budget
-                                    ),
-                                ]
-                            )
-                        ],
-                        className="h-100",
-                        color="muted" if wants_actual <= wants_budget else "danger",
-                        outline=True,
-                    )
-                ],
+                            html.H6("Wants", className="text-muted mb-2"),
+                            html.H4(f"€{wants_actual:,.2f}", className="mb-0"),
+                            html.Small(
+                                f"of €{wants_budget:,.2f}", className="text-muted"
+                            ),
+                            create_mini_progress_bar(wants_actual, wants_budget),
+                        ]
+                    ),
+                    className="h-100",
+                    color="muted" if wants_actual <= wants_budget else "danger",
+                    outline=True,
+                ),
                 width=2,
             ),
             dbc.Col(
-                [
-                    dbc.Card(
+                dbc.Card(
+                    dbc.CardBody(
                         [
-                            dbc.CardBody(
-                                [
-                                    html.H6("Total Spent", className="text-muted mb-2"),
-                                    html.H4(f"€{total_actual:,.2f}", className="mb-0"),
-                                    html.Small(
-                                        f"of €{total_budget:,.2f}",
-                                        className="text-muted",
-                                    ),
-                                    create_mini_progress_bar(
-                                        total_actual, total_budget
-                                    ),
-                                ]
-                            )
-                        ],
-                        className="h-100",
-                    )
-                ],
+                            html.H6("Total Spent", className="text-muted mb-2"),
+                            html.H4(f"€{total_actual:,.2f}", className="mb-0"),
+                            html.Small(
+                                f"of €{total_budget:,.2f}", className="text-muted"
+                            ),
+                            create_mini_progress_bar(total_actual, total_budget),
+                        ]
+                    ),
+                    className="h-100",
+                ),
                 width=2,
             ),
             dbc.Col(
-                [
-                    dbc.Card(
+                dbc.Card(
+                    dbc.CardBody(
                         [
-                            dbc.CardBody(
-                                [
-                                    html.H6("Remaining", className="text-muted mb-2"),
-                                    html.H3(
-                                        f"€{remaining:,.2f}",
-                                        className="mb-0 text-success"
-                                        if remaining >= 0
-                                        else "mb-0 text-danger",
-                                    ),
-                                ]
-                            )
-                        ],
-                        className="h-100",
-                        color="success" if remaining >= 0 else "danger",
-                        outline=True,
-                    )
-                ],
+                            html.H6("Remaining", className="text-muted mb-2"),
+                            html.H3(
+                                f"€{remaining:,.2f}",
+                                className="mb-0 text-success"
+                                if remaining >= 0
+                                else "mb-0 text-danger",
+                            ),
+                        ]
+                    ),
+                    className="h-100",
+                    color="success" if remaining >= 0 else "danger",
+                    outline=True,
+                ),
                 width=2,
             ),
         ]
@@ -706,36 +666,29 @@ def create_summary_cards(df):
 
 
 def create_mini_progress_bar(actual, budget):
-    """Create a small progress bar"""
     if budget == 0:
         percent = 0
     else:
         percent = min((actual / budget) * 100, 100)
-
     color = "success" if percent <= 100 else "danger"
-
     return dbc.Progress(
         value=percent, color=color, className="mt-2", style={"height": "5px"}
     )
 
 
 def create_budget_details(df, year, month):
-    """Create detailed budget breakdown"""
-
     income_savings_types = ["Income", "Savings"]
     expense_types = ["Needs", "Wants", "Additional", "Unexpected"]
 
     left_sections = []
     for budget_type in income_savings_types:
         type_df = df[df["budget_type"] == budget_type]
-
         section = create_compact_budget_section(type_df, budget_type, year, month)
         left_sections.append(section)
 
     right_sections = []
     for budget_type in expense_types:
         type_df = df[df["budget_type"] == budget_type]
-
         section = create_detailed_budget_section(type_df, budget_type, year, month)
         right_sections.append(section)
 
@@ -807,7 +760,7 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                         html.Div(
                                             f"€{tx['amount_eur']:,.2f}",
                                             className="text-end",
-                                        ),
+                                        )
                                     ],
                                     width=4,
                                 ),
@@ -906,13 +859,13 @@ def create_compact_budget_section(type_df, budget_type, year, month):
         total_actual = (
             allocations["actual_amount"].sum() if not allocations.empty else 0
         )
-
         budgeted = type_df["budgeted_amount"].sum() if not type_df.empty else 0
 
         allocation_rows = []
         for _, alloc in allocations.iterrows():
             status_icon = "✓" if alloc["is_allocated"] else "○"
             status_class = "text-success" if alloc["is_allocated"] else "text-muted"
+            currency_symbol = "€" if alloc["currency"] == "EUR" else "$"
 
             allocation_rows.append(
                 dbc.ListGroupItem(
@@ -931,7 +884,7 @@ def create_compact_budget_section(type_df, budget_type, year, month):
                                         ),
                                         html.Br(),
                                         html.Small(
-                                            f"€{alloc['actual_amount']:,.2f} / €{alloc['allocated_amount']:,.2f}",
+                                            f"{currency_symbol}{alloc['actual_amount']:,.2f} / {currency_symbol}{alloc['allocated_amount']:,.2f}",
                                             className="text-muted",
                                         ),
                                     ],
@@ -1060,8 +1013,6 @@ def create_compact_budget_section(type_df, budget_type, year, month):
 
 
 def create_detailed_budget_section(type_df, budget_type, year, month):
-    """Create detailed section for Expenses - CATEGORY ONLY"""
-
     type_df = type_df.copy().sort_values(by="actual_amount", ascending=False)
 
     if budget_type == "Needs":
@@ -1136,7 +1087,7 @@ def create_detailed_budget_section(type_df, budget_type, year, month):
                                 [
                                     dbc.Badge(
                                         budget_type, color=badge_color, className="me-2"
-                                    ),
+                                    )
                                 ],
                                 width=8,
                             ),
@@ -1145,7 +1096,7 @@ def create_detailed_budget_section(type_df, budget_type, year, month):
                                     html.Small(
                                         f"{len(type_df)} categories",
                                         className="text-muted",
-                                    ),
+                                    )
                                 ],
                                 width=4,
                                 className="text-end",
@@ -1193,7 +1144,6 @@ def create_detailed_budget_section(type_df, budget_type, year, month):
     prevent_initial_call=True,
 )
 def switch_template(template_id, year, month):
-    """Switch active template and refresh budget view"""
     if not template_id:
         raise PreventUpdate
 
@@ -1228,15 +1178,11 @@ def switch_template(template_id, year, month):
         Output("current-year", "data", allow_duplicate=True),
         Output("current-month", "data", allow_duplicate=True),
     ],
-    [
-        Input("budget-prev-month", "n_clicks"),
-        Input("budget-next-month", "n_clicks"),
-    ],
+    [Input("budget-prev-month", "n_clicks"), Input("budget-next-month", "n_clicks")],
     [State("current-year", "data"), State("current-month", "data")],
     prevent_initial_call=True,
 )
 def navigate_months(prev_clicks, next_clicks, year, month):
-    """Navigate between months"""
     from dash import ctx
 
     if not ctx.triggered_id:
@@ -1286,7 +1232,6 @@ def navigate_months(prev_clicks, next_clicks, year, month):
     prevent_initial_call=True,
 )
 def open_edit_modal(n_clicks, btn_ids, is_open):
-    """Open edit modal for budget item"""
     from dash import ctx
 
     if not any(n_clicks):
@@ -1305,8 +1250,7 @@ def open_edit_modal(n_clicks, btn_ids, is_open):
         """
         SELECT SUM(budgeted_amount) as budgeted_amount
         FROM monthly_budgets
-        WHERE year = ? AND month = ? 
-            AND budget_type = ? AND category = ?
+        WHERE year = ? AND month = ? AND budget_type = ? AND category = ?
         GROUP BY budget_type, category
     """,
         (year, month, budget_type, category),
@@ -1359,7 +1303,6 @@ def open_edit_modal(n_clicks, btn_ids, is_open):
     prevent_initial_call=True,
 )
 def save_budget_edit(save_clicks, cancel_clicks, amount, data):
-    """Save budget edit"""
     from dash import ctx
 
     if not ctx.triggered_id:
@@ -1372,15 +1315,9 @@ def save_budget_edit(save_clicks, cancel_clicks, amount, data):
         db.write_execute(
             """
             DELETE FROM monthly_budgets
-            WHERE year = ? AND month = ? 
-                AND budget_type = ? AND category = ?
+            WHERE year = ? AND month = ? AND budget_type = ? AND category = ?
         """,
-            (
-                data["year"],
-                data["month"],
-                data["budget_type"],
-                data["category"],
-            ),
+            (data["year"], data["month"], data["budget_type"], data["category"]),
         )
 
         template_id = db.fetch_one(
@@ -1415,9 +1352,7 @@ def save_budget_edit(save_clicks, cancel_clicks, amount, data):
         Input("cancel-template-edit", "n_clicks"),
         Input("save-template-edit", "n_clicks"),
     ],
-    [
-        State("edit-template-modal", "is_open"),
-    ],
+    [State("edit-template-modal", "is_open")],
     prevent_initial_call=True,
 )
 def toggle_template_modal(edit_click, cancel_click, save_click, is_open):
@@ -1562,9 +1497,7 @@ def save_template(save_click, amounts, template_data, save_as_new, new_template_
 @callback(
     Output("template-edit-data", "data", allow_duplicate=True),
     Output("template-live-summary", "children"),
-    [
-        Input({"type": "template-amount", "index": dash.ALL}, "value"),
-    ],
+    [Input({"type": "template-amount", "index": dash.ALL}, "value")],
     [State("template-edit-data", "data")],
     prevent_initial_call=True,
 )
@@ -1593,8 +1526,7 @@ def update_template_totals(amounts, template_data):
             dbc.Row(
                 [
                     dbc.Col(
-                        [html.Strong("Income: "), html.Span(f"€{income:,.2f}")],
-                        width=3,
+                        [html.Strong("Income: "), html.Span(f"€{income:,.2f}")], width=3
                     ),
                     dbc.Col(
                         [
@@ -1938,8 +1870,6 @@ def toggle_new_template_name(save_as_new):
 
 
 def create_template_item_row(item, idx):
-    """Create an editable row for a template budget item - CATEGORY ONLY"""
-
     type_colors = {
         "Income": "secondary",
         "Savings": "success",
@@ -2024,7 +1954,6 @@ def create_template_item_row(item, idx):
     prevent_initial_call=True,
 )
 def reset_to_template(n_clicks, year, month):
-    """Reset current month's budget to active template"""
     if not n_clicks:
         raise PreventUpdate
 
@@ -2048,16 +1977,11 @@ def reset_to_template(n_clicks, year, month):
     prevent_initial_call=True,
 )
 def lock_month(n_clicks, year, month):
-    """Lock month to prevent further edits"""
     if not n_clicks:
         raise PreventUpdate
 
     is_locked = db.fetch_one(
-        """
-        SELECT COALESCE(MAX(is_locked), 0)
-        FROM monthly_budgets
-        WHERE year = ? AND month = ?
-    """,
+        "SELECT COALESCE(MAX(is_locked), 0) FROM monthly_budgets WHERE year = ? AND month = ?",
         (year, month),
     )[0]
 
@@ -2267,15 +2191,11 @@ def open_income_modal(n_clicks, btn_ids, is_open):
                         ),
                     ]
                 )
-            ],
+            ]
         ),
         dcc.Store(
             id="income-record-data",
-            data={
-                "year": year,
-                "month": month,
-                "category": category,
-            },
+            data={"year": year, "month": month, "category": category},
         ),
     ]
 
@@ -2340,11 +2260,7 @@ def save_income_record(
                 return True
 
             cursor = db.write_execute(
-                """
-                INSERT INTO income_streams
-                (name, amount, frequency, is_active, owner)
-                VALUES (?, ?, ?, 1, ?)
-            """,
+                "INSERT INTO income_streams (name, amount, frequency, is_active, owner) VALUES (?, ?, ?, 1, ?)",
                 (new_name, float(new_amount), new_frequency, new_owner),
             )
             stream_id = cursor.lastrowid
@@ -2361,19 +2277,8 @@ def save_income_record(
             description = stream_name[0] if stream_name else "Income"
 
         db.write_execute(
-            """
-            INSERT INTO income_transactions
-            (date, description, amount_eur, income_stream_id, year, month, notes)
-            VALUES (?, ?, ?, ?, ?, ?, NULL)
-        """,
-            (
-                date,
-                description,
-                float(amount),
-                stream_id,
-                data["year"],
-                data["month"],
-            ),
+            "INSERT INTO income_transactions (date, description, amount_eur, income_stream_id, year, month, notes) VALUES (?, ?, ?, ?, ?, ?, NULL)",
+            (date, description, float(amount), stream_id, data["year"], data["month"]),
         )
 
     return False
@@ -2432,89 +2337,7 @@ def toggle_manage_streams_modal(
         if not open_click:
             raise PreventUpdate
 
-        streams = db.fetch_df(
-            "SELECT id, name, amount, frequency, owner, is_active FROM income_streams ORDER BY is_active DESC, name"
-        )
-
-        stream_cards = []
-        for _, stream in streams.iterrows():
-            status_badge = dbc.Badge(
-                "Active" if stream["is_active"] else "Inactive",
-                color="success" if stream["is_active"] else "secondary",
-                className="me-2",
-            )
-
-            stream_cards.append(
-                dbc.Card(
-                    [
-                        dbc.CardBody(
-                            [
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                status_badge,
-                                                html.Strong(stream["name"]),
-                                                html.Br(),
-                                                html.Small(
-                                                    f"€{stream['amount']:,.2f} • {stream['frequency']} • {stream['owner']}",
-                                                    className="text-muted",
-                                                ),
-                                            ],
-                                            width=8,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.ButtonGroup(
-                                                    [
-                                                        dbc.Button(
-                                                            html.I(
-                                                                className="bi bi-pencil"
-                                                            ),
-                                                            id={
-                                                                "type": "edit-stream-btn",
-                                                                "stream_id": int(
-                                                                    stream["id"]
-                                                                ),
-                                                            },
-                                                            color="primary",
-                                                            size="sm",
-                                                            outline=True,
-                                                        ),
-                                                        dbc.Button(
-                                                            html.I(
-                                                                className="bi bi-toggle-on"
-                                                                if stream["is_active"]
-                                                                else "bi bi-toggle-off"
-                                                            ),
-                                                            id={
-                                                                "type": "toggle-stream-btn",
-                                                                "stream_id": int(
-                                                                    stream["id"]
-                                                                ),
-                                                            },
-                                                            color="success"
-                                                            if stream["is_active"]
-                                                            else "secondary",
-                                                            size="sm",
-                                                            outline=True,
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                            width=4,
-                                            className="text-end",
-                                        ),
-                                    ]
-                                )
-                            ]
-                        )
-                    ],
-                    className="mb-2",
-                )
-            )
-
-        return True, stream_cards
+        return True, build_streams_list()
 
     if isinstance(trigger, dict) and trigger.get("type") == "toggle-stream-btn":
         stream_id = trigger["stream_id"]
@@ -2522,7 +2345,6 @@ def toggle_manage_streams_modal(
         current_status = db.fetch_one(
             "SELECT is_active FROM income_streams WHERE id = ?", (stream_id,)
         )[0]
-
         new_status = 0 if current_status else 1
 
         db.write_execute(
@@ -2530,91 +2352,95 @@ def toggle_manage_streams_modal(
             (new_status, stream_id),
         )
 
-        streams = db.fetch_df(
-            "SELECT id, name, amount, frequency, owner, is_active FROM income_streams ORDER BY is_active DESC, name"
-        )
-
-        stream_cards = []
-        for _, stream in streams.iterrows():
-            status_badge = dbc.Badge(
-                "Active" if stream["is_active"] else "Inactive",
-                color="success" if stream["is_active"] else "secondary",
-                className="me-2",
-            )
-
-            stream_cards.append(
-                dbc.Card(
-                    [
-                        dbc.CardBody(
-                            [
-                                dbc.Row(
-                                    [
-                                        dbc.Col(
-                                            [
-                                                status_badge,
-                                                html.Strong(stream["name"]),
-                                                html.Br(),
-                                                html.Small(
-                                                    f"€{stream['amount']:,.2f} • {stream['frequency']} • {stream['owner']}",
-                                                    className="text-muted",
-                                                ),
-                                            ],
-                                            width=8,
-                                        ),
-                                        dbc.Col(
-                                            [
-                                                dbc.ButtonGroup(
-                                                    [
-                                                        dbc.Button(
-                                                            html.I(
-                                                                className="bi bi-pencil"
-                                                            ),
-                                                            id={
-                                                                "type": "edit-stream-btn",
-                                                                "stream_id": int(
-                                                                    stream["id"]
-                                                                ),
-                                                            },
-                                                            color="primary",
-                                                            size="sm",
-                                                            outline=True,
-                                                        ),
-                                                        dbc.Button(
-                                                            html.I(
-                                                                className="bi bi-toggle-on"
-                                                                if stream["is_active"]
-                                                                else "bi bi-toggle-off"
-                                                            ),
-                                                            id={
-                                                                "type": "toggle-stream-btn",
-                                                                "stream_id": int(
-                                                                    stream["id"]
-                                                                ),
-                                                            },
-                                                            color="success"
-                                                            if stream["is_active"]
-                                                            else "secondary",
-                                                            size="sm",
-                                                            outline=True,
-                                                        ),
-                                                    ],
-                                                ),
-                                            ],
-                                            width=4,
-                                            className="text-end",
-                                        ),
-                                    ]
-                                )
-                            ]
-                        )
-                    ],
-                    className="mb-2",
-                )
-            )
-
-        return True, stream_cards
+        return True, build_streams_list()
 
     raise PreventUpdate
+
+
+def build_streams_list():
+    streams = db.fetch_df(
+        "SELECT id, name, amount, frequency, owner, is_active FROM income_streams ORDER BY is_active DESC, name"
+    )
+
+    stream_cards = []
+    for _, stream in streams.iterrows():
+        status_badge = dbc.Badge(
+            "Active" if stream["is_active"] else "Inactive",
+            color="success" if stream["is_active"] else "secondary",
+            className="me-2",
+        )
+
+        stream_cards.append(
+            dbc.Card(
+                [
+                    dbc.CardBody(
+                        [
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            status_badge,
+                                            html.Strong(stream["name"]),
+                                            html.Br(),
+                                            html.Small(
+                                                f"€{stream['amount']:,.2f} • {stream['frequency']} • {stream['owner']}",
+                                                className="text-muted",
+                                            ),
+                                        ],
+                                        width=8,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            dbc.ButtonGroup(
+                                                [
+                                                    dbc.Button(
+                                                        html.I(
+                                                            className="bi bi-pencil"
+                                                        ),
+                                                        id={
+                                                            "type": "edit-stream-btn",
+                                                            "stream_id": int(
+                                                                stream["id"]
+                                                            ),
+                                                        },
+                                                        color="primary",
+                                                        size="sm",
+                                                        outline=True,
+                                                    ),
+                                                    dbc.Button(
+                                                        html.I(
+                                                            className="bi bi-toggle-on"
+                                                            if stream["is_active"]
+                                                            else "bi bi-toggle-off"
+                                                        ),
+                                                        id={
+                                                            "type": "toggle-stream-btn",
+                                                            "stream_id": int(
+                                                                stream["id"]
+                                                            ),
+                                                        },
+                                                        color="success"
+                                                        if stream["is_active"]
+                                                        else "secondary",
+                                                        size="sm",
+                                                        outline=True,
+                                                    ),
+                                                ],
+                                            ),
+                                        ],
+                                        width=4,
+                                        className="text-end",
+                                    ),
+                                ]
+                            )
+                        ]
+                    )
+                ],
+                className="mb-2",
+            )
+        )
+
+    return stream_cards
 
 
 @callback(
@@ -2652,11 +2478,7 @@ def open_edit_stream_modal(n_clicks, btn_ids, is_open):
                 dbc.Col(
                     [
                         dbc.Label("Stream Name *"),
-                        dbc.Input(
-                            id="edit-stream-name",
-                            type="text",
-                            value=stream[0],
-                        ),
+                        dbc.Input(id="edit-stream-name", type="text", value=stream[0]),
                     ],
                     width=6,
                 ),
@@ -2697,11 +2519,7 @@ def open_edit_stream_modal(n_clicks, btn_ids, is_open):
                 dbc.Col(
                     [
                         dbc.Label("Owner"),
-                        dbc.Input(
-                            id="edit-stream-owner",
-                            type="text",
-                            value=stream[3],
-                        ),
+                        dbc.Input(id="edit-stream-owner", type="text", value=stream[3]),
                     ],
                     width=6,
                 ),
@@ -2738,11 +2556,7 @@ def save_stream_edit(
 
     if ctx.triggered_id == "save-stream-edit" and name and amount:
         db.write_execute(
-            """
-            UPDATE income_streams
-            SET name = ?, amount = ?, frequency = ?, owner = ?
-            WHERE id = ?
-        """,
+            "UPDATE income_streams SET name = ?, amount = ?, frequency = ?, owner = ? WHERE id = ?",
             (name, float(amount), frequency, owner, stream_id),
         )
 
@@ -2820,7 +2634,7 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                             html.P(f"{calendar.month_name[month]} {year}"),
                         ],
                         width=12,
-                    ),
+                    )
                 ],
                 className="mb-3",
             ),
@@ -2837,7 +2651,7 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                             ),
                         ],
                         width=12,
-                    ),
+                    )
                 ],
                 className="mb-3",
             ),
@@ -2845,7 +2659,7 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                 [
                     dbc.Col(
                         [
-                            dbc.Label("Amount (€)"),
+                            dbc.Label("Amount"),
                             dbc.Input(
                                 id="allocation-amount",
                                 type="number",
@@ -2854,8 +2668,8 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                             ),
                         ],
                         width=12,
-                    ),
-                ],
+                    )
+                ]
             ),
             dcc.Store(
                 id="allocation-data",
@@ -2874,7 +2688,7 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                             html.P(f"{calendar.month_name[month]} {year}"),
                         ],
                         width=12,
-                    ),
+                    )
                 ],
                 className="mb-3",
             ),
@@ -2890,7 +2704,7 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                             ),
                         ],
                         width=12,
-                    ),
+                    )
                 ],
                 className="mb-3",
             ),
@@ -2898,7 +2712,7 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                 [
                     dbc.Col(
                         [
-                            dbc.Label("Amount (€)"),
+                            dbc.Label("Amount"),
                             dbc.Input(
                                 id="allocation-amount",
                                 type="number",
@@ -2907,8 +2721,8 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
                             ),
                         ],
                         width=12,
-                    ),
-                ],
+                    )
+                ]
             ),
             dcc.Store(
                 id="allocation-data",
@@ -3026,213 +2840,6 @@ def delete_allocation(n_clicks, btn_ids):
 
 
 @callback(
-    [
-        Output("manage-allocations-modal", "is_open"),
-        Output("savings-allocations-form", "children"),
-    ],
-    [
-        Input("manage-savings-allocations-btn", "n_clicks"),
-        Input("cancel-allocations", "n_clicks"),
-    ],
-    [
-        State("manage-allocations-modal", "is_open"),
-        State("current-year", "data"),
-        State("current-month", "data"),
-    ],
-    prevent_initial_call=True,
-)
-def toggle_allocations_modal(open_click, cancel_click, is_open, year, month):
-    from dash import ctx
-
-    if not ctx.triggered_id or ctx.triggered_id is None:
-        raise PreventUpdate
-
-    if ctx.triggered_id == "cancel-allocations":
-        return False, []
-
-    if ctx.triggered_id == "manage-savings-allocations-btn":
-        if not open_click:
-            raise PreventUpdate
-
-        buckets = db.fetch_df(
-            "SELECT id, name, currency FROM savings_buckets WHERE is_active = 1"
-        )
-        allocations = get_savings_allocations(year, month)
-
-        bucket_options = [
-            {"label": f"{row['name']} ({row['currency']})", "value": row["id"]}
-            for _, row in buckets.iterrows()
-        ]
-
-        existing_rows = []
-        for _, alloc in allocations.iterrows():
-            if alloc["allocated_amount"] > 0:
-                existing_rows.append(
-                    dbc.Card(
-                        [
-                            dbc.CardBody(
-                                [
-                                    dbc.Row(
-                                        [
-                                            dbc.Col(
-                                                [
-                                                    html.Strong(alloc["bucket_name"]),
-                                                    html.Br(),
-                                                    html.Small(
-                                                        f"€{alloc['allocated_amount']:,.2f}",
-                                                        className="text-muted",
-                                                    ),
-                                                ],
-                                                width=8,
-                                            ),
-                                            dbc.Col(
-                                                [
-                                                    dbc.Button(
-                                                        html.I(className="bi bi-trash"),
-                                                        id={
-                                                            "type": "delete-allocation-btn",
-                                                            "bucket_id": int(
-                                                                alloc["bucket_id"]
-                                                            ),
-                                                        },
-                                                        color="danger",
-                                                        size="sm",
-                                                        outline=True,
-                                                    )
-                                                ],
-                                                width=4,
-                                                className="text-end",
-                                            ),
-                                        ]
-                                    )
-                                ]
-                            )
-                        ],
-                        className="mb-2",
-                    )
-                )
-
-        form = [
-            html.H6(
-                f"Savings allocations for {calendar.month_name[month]} {year}",
-                className="mb-3",
-            ),
-            html.Div(existing_rows)
-            if existing_rows
-            else html.P("No allocations yet", className="text-muted"),
-            html.Hr(),
-            html.H6("Add allocation", className="mb-3"),
-            dbc.Row(
-                [
-                    dbc.Col(
-                        [
-                            dbc.Label("Savings Goal"),
-                            dcc.Dropdown(
-                                id="new-allocation-bucket",
-                                options=bucket_options,
-                                placeholder="Select savings goal...",
-                            ),
-                        ],
-                        width=6,
-                    ),
-                    dbc.Col(
-                        [
-                            dbc.Label("Amount (€)"),
-                            dbc.Input(
-                                id="new-allocation-amount",
-                                type="number",
-                                step=0.01,
-                                placeholder="0.00",
-                            ),
-                        ],
-                        width=4,
-                    ),
-                    dbc.Col(
-                        [
-                            dbc.Label(" "),
-                            dbc.Button(
-                                html.I(className="bi bi-plus-circle"),
-                                id="add-allocation-btn",
-                                color="success",
-                                size="sm",
-                                className="w-100",
-                            ),
-                        ],
-                        width=2,
-                    ),
-                ],
-                className="mb-3",
-            ),
-            dcc.Store(id="allocations-data", data={"year": year, "month": month}),
-        ]
-
-        return True, form
-
-    raise PreventUpdate
-
-
-@callback(
-    Output("manage-allocations-modal", "is_open", allow_duplicate=True),
-    [Input("add-allocation-btn", "n_clicks")],
-    [
-        State("new-allocation-bucket", "value"),
-        State("new-allocation-amount", "value"),
-        State("allocations-data", "data"),
-    ],
-    prevent_initial_call=True,
-)
-def add_allocation(add_click, bucket_id, amount, data):
-    if not add_click or not bucket_id or not amount or amount <= 0:
-        raise PreventUpdate
-
-    year = data["year"]
-    month = data["month"]
-
-    db.write_execute(
-        """
-        INSERT INTO savings_allocations (bucket_id, year, month, allocated_amount)
-        VALUES (?, ?, ?, ?)
-        ON CONFLICT(bucket_id, year, month) DO UPDATE 
-        SET allocated_amount = excluded.allocated_amount
-    """,
-        (bucket_id, year, month, float(amount)),
-    )
-
-    return dash.no_update
-
-
-@callback(
-    Output("current-year", "data", allow_duplicate=True),
-    [Input({"type": "delete-allocation-btn", "bucket_id": dash.ALL}, "n_clicks")],
-    [
-        State({"type": "delete-allocation-btn", "bucket_id": dash.ALL}, "id"),
-        State("allocations-data", "data"),
-    ],
-    prevent_initial_call=True,
-)
-def delete_allocation(n_clicks, btn_ids, data):
-    from dash import ctx
-
-    if not any(n_clicks):
-        raise PreventUpdate
-
-    button_id = ctx.triggered_id
-    if not button_id:
-        raise PreventUpdate
-
-    bucket_id = button_id["bucket_id"]
-    year = data["year"]
-    month = data["month"]
-
-    db.write_execute(
-        "DELETE FROM savings_allocations WHERE bucket_id = ? AND year = ? AND month = ?",
-        (bucket_id, year, month),
-    )
-
-    return dash.no_update
-
-
-@callback(
     Output("current-year", "data", allow_duplicate=True),
     [
         Input(
@@ -3279,9 +2886,6 @@ def allocate_to_bucket(n_clicks, btn_ids):
 
     if allocation and allocation[0]:
         amount = allocation[0]
-
-        from datetime import datetime
-
         today = datetime.now().strftime("%Y-%m-%d")
 
         db.write_execute(

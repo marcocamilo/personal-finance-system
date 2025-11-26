@@ -102,6 +102,7 @@ CREATE TABLE IF NOT EXISTS savings_buckets (
     start_amount REAL DEFAULT 0,
     is_active BOOLEAN DEFAULT 1,
     target_date DATE,
+    is_ongoing BOOLEAN DEFAULT 0,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
