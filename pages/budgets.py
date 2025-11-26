@@ -67,25 +67,31 @@ def get_current_budget(year: int, month: int):
                     }
                 )
 
-        if ("Savings", "Savings") not in existing_keys:
-            template_savings = db.fetch_one(
-                "SELECT SUM(budgeted_amount) FROM template_categories WHERE template_id = ? AND budget_type = 'Savings'",
+        has_savings = any(bt == "Savings" for bt, _ in existing_keys)
+        if not has_savings:
+            template_savings = db.fetch_df(
+                "SELECT category, budgeted_amount FROM template_categories WHERE template_id = ? AND budget_type = 'Savings'",
                 (template_id,),
             )
-            savings_budget = (
-                template_savings[0]
-                if template_savings and template_savings[0]
-                else 1000.0
-            )
-
-            missing.append(
-                {
-                    "budget_type": "Savings",
-                    "category": "Savings",
-                    "budgeted_amount": savings_budget,
-                    "template_id": template_id,
-                }
-            )
+            if not template_savings.empty:
+                for _, row in template_savings.iterrows():
+                    missing.append(
+                        {
+                            "budget_type": "Savings",
+                            "category": row["category"],
+                            "budgeted_amount": row["budgeted_amount"],
+                            "template_id": template_id,
+                        }
+                    )
+            else:
+                missing.append(
+                    {
+                        "budget_type": "Savings",
+                        "category": "Savings",
+                        "budgeted_amount": 1000.0,
+                        "template_id": template_id,
+                    }
+                )
 
         if missing:
             import pandas as pd
