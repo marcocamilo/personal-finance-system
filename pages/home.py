@@ -17,11 +17,53 @@ from database.db import db
 dash.register_page(__name__, path="/", title="Dashboard")
 
 
+def get_billing_cycle_dates(year: int, month: int):
+    """
+    Calculate billing cycle dates for a given month.
+
+    Pattern: Starts on 26th of the given month, ends based on days in NEXT month:
+    - If next month has 31 days → ends on 25th
+    - If next month has 30 days → ends on 24th
+    - If next month has 29 days → ends on 23rd (Feb leap year)
+    - If next month has 28 days → ends on 22nd (Feb normal)
+
+    Examples:
+    - Oct 26 → Nov 24 (Nov has 30 days)
+    - Jul 26 → Aug 25 (Aug has 31 days)
+    - Mar 26 → Apr 24 (Apr has 30 days)
+    - Dec 26 → Jan 25 (Jan has 31 days)
+    - Jan 26 → Feb 22 (Feb has 28 days in 2025)
+
+    Args:
+        year: Year to calculate cycle for
+        month: Month to calculate cycle for (1-12)
+
+    Returns:
+        tuple: (cycle_start_date, cycle_end_date) as strings in YYYY-MM-DD format
+    """
+    # Start date: 26th of the given month
+    cycle_start = datetime(year, month, 26)
+
+    # Calculate next month
+    if month == 12:
+        next_month_year = year + 1
+        next_month = 1
+    else:
+        next_month_year = year
+        next_month = month + 1
+
+    end_day = 25
+    cycle_end = datetime(next_month_year, next_month, end_day)
+
+    return (cycle_start.strftime("%Y-%m-%d"), cycle_end.strftime("%Y-%m-%d"))
+
+
 def get_month_summary(year: int, month: int):
     """Get summary statistics for a specific month"""
     first_day = f"{year}-{month:02d}-01"
     last_day = f"{year}-{month:02d}-{calendar.monthrange(year, month)[1]}"
 
+    # Your spending (EUR native)
     your_spending = db.fetch_all(
         """
         SELECT COALESCE(SUM(amount_usd), 0)
@@ -32,6 +74,7 @@ def get_month_summary(year: int, month: int):
         (first_day, last_day),
     )[0][0]
 
+    # Quorum spending (USD native)
     quorum_spending = db.fetch_all(
         """
         SELECT COALESCE(SUM(amount_usd), 0)
@@ -42,6 +85,7 @@ def get_month_summary(year: int, month: int):
         (first_day, last_day),
     )[0][0]
 
+    # Your EUR total
     your_eur = db.fetch_all(
         """
         SELECT COALESCE(SUM(amount_eur), 0)
@@ -52,6 +96,7 @@ def get_month_summary(year: int, month: int):
         (first_day, last_day),
     )[0][0]
 
+    # Category breakdown (EUR only, excluding Quorum)
     category_breakdown = db.fetch_df(
         """
         SELECT 
@@ -68,6 +113,7 @@ def get_month_summary(year: int, month: int):
         (first_day, last_day),
     )
 
+    # Get Quorum reimbursement status
     quorum_status = db.fetch_one(
         """
         SELECT 
@@ -90,14 +136,58 @@ def get_month_summary(year: int, month: int):
         - (float(quorum_status[1]) if quorum_status and quorum_status[1] else 0),
     }
 
+    # FIXED: Get the billing cycle that ENDS within this month (most overlap)
+    # For October, we want Sep 26 - Oct 24/25, not Oct 26 - Nov 24
+    # So we calculate the cycle for the PREVIOUS month
+    if month == 1:
+        cycle_year = year - 1
+        cycle_month = 12
+    else:
+        cycle_year = year
+        cycle_month = month - 1
+
+    cycle_start, cycle_end = get_billing_cycle_dates(cycle_year, cycle_month)
+
+    # Your spending in this billing cycle
+    cycle_your_spending = db.fetch_all(
+        """
+        SELECT COALESCE(SUM(amount_usd), 0)
+        FROM transactions
+        WHERE date BETWEEN ? AND ?
+          AND is_quorum = 0
+    """,
+        (cycle_start, cycle_end),
+    )[0][0]
+
+    # Quorum spending in this billing cycle
+    cycle_quorum_spending = db.fetch_all(
+        """
+        SELECT COALESCE(SUM(amount_usd), 0)
+        FROM transactions
+        WHERE date BETWEEN ? AND ?
+          AND is_quorum = 1
+    """,
+        (cycle_start, cycle_end),
+    )[0][0]
+
     return {
         "your_spending_usd": float(your_spending),
         "your_spending_eur": float(your_eur),
         "quorum_spending_usd": float(quorum_spending),
-        "total_credit_card_usd": float(your_spending + quorum_spending),
+        "total_credit_card_usd": float(
+            cycle_your_spending + cycle_quorum_spending
+        ),  # Uses previous month's cycle (ends in current month)
         "net_you_pay_usd": float(your_spending + quorum_info["pending"]),
         "category_breakdown": category_breakdown,
         "quorum_info": quorum_info,
+        "billing_cycle": {
+            "start": cycle_start,
+            "end": cycle_end,
+            "year": cycle_year,
+            "month": cycle_month,
+            "your_usd": float(cycle_your_spending),
+            "quorum_usd": float(cycle_quorum_spending),
+        },
     }
 
 
@@ -141,6 +231,13 @@ def render_dashboard(year, month):
         """)[0][0]
     except:
         uncategorized_count = 0
+
+    # Format billing cycle dates for display
+    cycle_start_date = datetime.strptime(summary["billing_cycle"]["start"], "%Y-%m-%d")
+    cycle_end_date = datetime.strptime(summary["billing_cycle"]["end"], "%Y-%m-%d")
+    cycle_display = (
+        f"{cycle_start_date.strftime('%b %d')} - {cycle_end_date.strftime('%b %d')}"
+    )
 
     return html.Div(
         [
@@ -238,11 +335,11 @@ def render_dashboard(year, month):
                                         className="mb-0",
                                     ),
                                     html.Small(
-                                        "Your + Quorum charges", className="text-muted"
+                                        f"Billing cycle: {cycle_display}",
+                                        className="text-muted",
                                     ),
                                 ]
                             ),
-                            color="muted",
                             outline=True,
                         ),
                         width=3,
