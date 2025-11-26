@@ -286,8 +286,8 @@ def layout():
                                             dcc.Dropdown(
                                                 id="new-goal-type",
                                                 options=[
-                                                    {"label": "Fixed Goal (e.g., Emergency Fund)", "value": "fixed"},
-                                                    {"label": "Ongoing (e.g., Roth IRA)", "value": "ongoing"},
+                                                    {"label": "Fixed Goal", "value": "fixed"},
+                                                    {"label": "Ongoing", "value": "ongoing"},
                                                 ],
                                                 value="fixed",
                                                 clearable=False,

@@ -98,7 +98,7 @@ CREATE TABLE IF NOT EXISTS savings_buckets (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     name TEXT NOT NULL,
     currency TEXT NOT NULL CHECK(currency IN ('EUR', 'USD')),
-    goal_amount REAL NOT NULL,
+    goal_amount REAL,
     start_amount REAL DEFAULT 0,
     is_active BOOLEAN DEFAULT 1,
     target_date DATE,
