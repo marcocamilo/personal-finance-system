@@ -4,7 +4,6 @@ Comprehensive spending analysis, trends, and insights
 """
 
 from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
 
 import dash
 import dash_bootstrap_components as dbc
@@ -13,10 +12,12 @@ import plotly.express as px
 import plotly.graph_objects as go
 from dash import Input, Output, State, callback, dcc, html
 from dash.exceptions import PreventUpdate
+from dateutil.relativedelta import relativedelta
 
 from database.db import db
 
 dash.register_page(__name__, path="/analytics", title="Analytics")
+
 
 COLORS = {
     "Needs": "#3498db",
@@ -28,6 +29,30 @@ COLORS = {
 }
 
 BUDGET_TYPE_ORDER = ["Needs", "Wants", "Savings", "Unexpected", "Additional"]
+
+
+EXTENDED_COLORS = [
+    "#3498db",
+    "#9b59b6",
+    "#2ecc71",
+    "#e74c3c",
+    "#f39c12",
+    "#1abc9c",
+    "#e67e22",
+    "#3498db",
+    "#2c3e50",
+    "#16a085",
+    "#27ae60",
+    "#2980b9",
+    "#8e44ad",
+    "#c0392b",
+    "#d35400",
+    "#7f8c8d",
+    "#34495e",
+    "#95a5a6",
+    "#bdc3c7",
+    "#ecf0f1",
+]
 
 
 def get_date_range(preset: str, start_date: str = None, end_date: str = None):
@@ -162,16 +187,29 @@ def calculate_spending_drift(df: pd.DataFrame, months: int = 6):
         return None
 
     mid = len(monthly) // 2
-    early_avg = monthly.iloc[:mid]["amount_eur"].mean()
-    recent_avg = monthly.iloc[mid:]["amount_eur"].mean()
+    early_months = monthly.iloc[:mid]
+    recent_months = monthly.iloc[mid:]
+
+    early_avg = early_months["amount_eur"].mean()
+    recent_avg = recent_months["amount_eur"].mean()
 
     drift_pct = ((recent_avg - early_avg) / early_avg * 100) if early_avg > 0 else 0
+
+    early_start = early_months["month"].iloc[0]
+    early_end = early_months["month"].iloc[-1]
+    recent_start = recent_months["month"].iloc[0]
+    recent_end = recent_months["month"].iloc[-1]
 
     return {
         "early_avg": early_avg,
         "recent_avg": recent_avg,
         "drift_pct": drift_pct,
+        "drift_amount": recent_avg - early_avg,
         "direction": "up" if drift_pct > 5 else "down" if drift_pct < -5 else "stable",
+        "early_period": f"{early_start} to {early_end}",
+        "recent_period": f"{recent_start} to {recent_end}",
+        "early_months_count": len(early_months),
+        "recent_months_count": len(recent_months),
     }
 
 
@@ -285,43 +323,174 @@ def build_category_breakdown_chart(df: pd.DataFrame):
         return go.Figure()
 
     totals = df.groupby("budget_type")["amount_eur"].sum().reset_index()
-    totals = totals.sort_values("amount_eur", ascending=True)
+
+    for bt in BUDGET_TYPE_ORDER:
+        if bt not in totals["budget_type"].values:
+            totals = pd.concat(
+                [totals, pd.DataFrame([{"budget_type": bt, "amount_eur": 0}])],
+                ignore_index=True,
+            )
+
+    totals["sort_order"] = totals["budget_type"].map(
+        {bt: i for i, bt in enumerate(BUDGET_TYPE_ORDER)}
+    )
+    totals = totals.sort_values("sort_order", ascending=False)
 
     grand_total = totals["amount_eur"].sum()
-    totals["percentage"] = totals["amount_eur"] / grand_total * 100
+    totals["percentage"] = (
+        (totals["amount_eur"] / grand_total * 100) if grand_total > 0 else 0
+    )
 
     fig = go.Figure()
 
-    for _, row in totals.iterrows():
-        fig.add_trace(
-            go.Bar(
-                y=[row["budget_type"]],
-                x=[row["amount_eur"]],
-                orientation="h",
-                name=row["budget_type"],
-                marker_color=COLORS.get(row["budget_type"], "#95a5a6"),
-                text=f"€{row['amount_eur']:,.0f} ({row['percentage']:.1f}%)",
-                textposition="auto",
-                hovertemplate=f"{row['budget_type']}<br>€%{{x:,.2f}}<br>{row['percentage']:.1f}%<extra></extra>",
-            )
+    fig.add_trace(
+        go.Bar(
+            y=totals["budget_type"],
+            x=totals["amount_eur"],
+            orientation="h",
+            marker_color=[COLORS.get(bt, "#95a5a6") for bt in totals["budget_type"]],
+            text=[
+                f"€{amt:,.0f} ({pct:.1f}%)"
+                for amt, pct in zip(totals["amount_eur"], totals["percentage"])
+            ],
+            textposition="auto",
+            hovertemplate="%{y}<br>€%{x:,.2f}<br>%{text}<extra></extra>",
         )
+    )
 
     fig.update_layout(
-        title="Spending by Category",
         xaxis_title="Amount (€)",
         yaxis_title="",
         showlegend=False,
         template="plotly_white",
-        height=300,
+        height=400,
+        margin=dict(l=20, r=20, t=20, b=40),
+    )
+
+    return fig
+
+
+def build_distribution_chart(df: pd.DataFrame, depth: str = "budget_type"):
+    """Build bar chart showing spending distribution at different depths."""
+    if df.empty:
+        return go.Figure().add_annotation(
+            text="No data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
+
+    if depth == "budget_type":
+        totals = df.groupby("budget_type")["amount_eur"].sum().reset_index()
+        totals.columns = ["group", "amount"]
+        color_map = COLORS
+    elif depth == "category":
+        totals = (
+            df.groupby(["budget_type", "category"])["amount_eur"].sum().reset_index()
+        )
+        totals["group"] = totals["category"]
+        totals["amount"] = totals["amount_eur"]
+
+        color_map = {
+            row["category"]: COLORS.get(row["budget_type"], "#95a5a6")
+            for _, row in totals.iterrows()
+        }
+    elif depth == "subcategory":
+        sub_df = df[df["subcategory"].notna() & (df["subcategory"] != "")]
+        if sub_df.empty:
+            sub_df = df.copy()
+            sub_df["subcategory"] = sub_df["category"]
+        totals = (
+            sub_df.groupby(["budget_type", "subcategory"])["amount_eur"]
+            .sum()
+            .reset_index()
+        )
+        totals["group"] = totals["subcategory"]
+        totals["amount"] = totals["amount_eur"]
+        color_map = {
+            row["subcategory"]: COLORS.get(row["budget_type"], "#95a5a6")
+            for _, row in totals.iterrows()
+        }
+    else:
+        merchant_df = df[df["description"].notna() & (df["description"] != "")]
+        if merchant_df.empty:
+            return go.Figure().add_annotation(
+                text="No merchant data available",
+                xref="paper",
+                yref="paper",
+                x=0.5,
+                y=0.5,
+                showarrow=False,
+            )
+        totals = merchant_df.groupby("description")["amount_eur"].sum().reset_index()
+        totals.columns = ["group", "amount"]
+
+        color_map = {
+            m: EXTENDED_COLORS[i % len(EXTENDED_COLORS)]
+            for i, m in enumerate(totals["group"].unique())
+        }
+
+    totals = totals.sort_values("amount", ascending=True)
+    if len(totals) > 15:
+        top = totals.tail(14)
+        other_amount = totals.head(len(totals) - 14)["amount"].sum()
+        other_row = pd.DataFrame([{"group": "Other", "amount": other_amount}])
+        totals = pd.concat([other_row, top], ignore_index=True)
+
+    grand_total = totals["amount"].sum()
+    totals["percentage"] = (
+        (totals["amount"] / grand_total * 100) if grand_total > 0 else 0
+    )
+
+    fig = go.Figure()
+
+    fig.add_trace(
+        go.Bar(
+            y=totals["group"],
+            x=totals["amount"],
+            orientation="h",
+            marker_color=[color_map.get(g, "#95a5a6") for g in totals["group"]],
+            text=[
+                f"€{amt:,.0f} ({pct:.1f}%)"
+                for amt, pct in zip(totals["amount"], totals["percentage"])
+            ],
+            textposition="auto",
+            hovertemplate="%{y}<br>€%{x:,.2f}<extra></extra>",
+        )
+    )
+
+    depth_labels = {
+        "budget_type": "Budget Type",
+        "category": "Category",
+        "subcategory": "Subcategory",
+        "merchant": "Merchant",
+    }
+
+    fig.update_layout(
+        xaxis_title="Amount (€)",
+        yaxis_title="",
+        showlegend=False,
+        template="plotly_white",
+        height=400,
+        margin=dict(l=20, r=20, t=20, b=40),
     )
 
     return fig
 
 
 def build_budget_adherence_chart(spending_df: pd.DataFrame, budget_df: pd.DataFrame):
-    """Build chart comparing budgeted vs actual spending by month."""
+    """Build chart showing budget surplus/deficit by month (positive = under budget, negative = over)."""
     if spending_df.empty or budget_df.empty:
-        return go.Figure()
+        return go.Figure().add_annotation(
+            text="No budget data available",
+            xref="paper",
+            yref="paper",
+            x=0.5,
+            y=0.5,
+            showarrow=False,
+        )
 
     actual = spending_df.groupby("month")["amount_eur"].sum().reset_index()
     actual.columns = ["month", "actual"]
@@ -333,31 +502,32 @@ def build_budget_adherence_chart(spending_df: pd.DataFrame, budget_df: pd.DataFr
     comparison = actual.merge(budgeted, on="month", how="outer").fillna(0)
     comparison = comparison.sort_values("month")
 
-    comparison["diff"] = comparison["budgeted"] - comparison["actual"]
-    comparison["status"] = comparison["diff"].apply(
+    comparison["balance"] = comparison["budgeted"] - comparison["actual"]
+    comparison["color"] = comparison["balance"].apply(
+        lambda x: "#2ecc71" if x >= 0 else "#e74c3c"
+    )
+    comparison["status"] = comparison["balance"].apply(
         lambda x: "Under Budget" if x >= 0 else "Over Budget"
     )
 
     fig = go.Figure()
 
-    fig.add_trace(
-        go.Bar(
-            x=comparison["month"],
-            y=comparison["budgeted"],
-            name="Budgeted",
-            marker_color="#3498db",
-            opacity=0.7,
-        )
-    )
+    fig.add_hline(y=0, line_dash="solid", line_color="#95a5a6", line_width=1)
 
     fig.add_trace(
         go.Bar(
             x=comparison["month"],
-            y=comparison["actual"],
-            name="Actual",
-            marker_color=comparison["diff"].apply(
-                lambda x: "#2ecc71" if x >= 0 else "#e74c3c"
+            y=comparison["balance"],
+            marker_color=comparison["color"],
+            text=[f"€{abs(b):,.0f}" for b in comparison["balance"]],
+            textposition="outside",
+            hovertemplate=(
+                "%{x}<br>"
+                "Budgeted: €%{customdata[0]:,.0f}<br>"
+                "Actual: €%{customdata[1]:,.0f}<br>"
+                "Balance: €%{y:,.0f}<extra></extra>"
             ),
+            customdata=comparison[["budgeted", "actual"]].values,
         )
     )
 
@@ -365,59 +535,42 @@ def build_budget_adherence_chart(spending_df: pd.DataFrame, budget_df: pd.DataFr
         fig.add_trace(
             go.Scatter(
                 x=comparison["month"],
-                y=comparison["actual"],
+                y=comparison["balance"],
                 mode="lines",
                 name="Trend",
-                line=dict(color="#95a5a6", dash="dot"),
+                line=dict(color="#3498db", dash="dot", width=2),
+                hoverinfo="skip",
             )
         )
 
     fig.update_layout(
-        title="Budget vs Actual Spending",
         xaxis_title="Month",
-        yaxis_title="Amount (€)",
-        barmode="group",
+        yaxis_title="Budget Balance (€)",
         template="plotly_white",
         height=350,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02),
+        showlegend=False,
+        margin=dict(l=20, r=20, t=20, b=40),
     )
 
-    return fig
-
-
-def build_merchant_distribution_chart(df: pd.DataFrame):
-    """Build pie chart showing merchant distribution."""
-    merchants = get_top_merchants(df, limit=8)
-    if merchants.empty:
-        return go.Figure()
-
-    total = df["amount_eur"].sum()
-    top_total = merchants["total_spent"].sum()
-    other = total - top_total
-
-    if other > 0:
-        merchants = pd.concat(
-            [merchants, pd.DataFrame([{"description": "Other", "total_spent": other}])],
-            ignore_index=True,
-        )
-
-    fig = px.pie(
-        merchants,
-        values="total_spent",
-        names="description",
-        hole=0.4,
+    fig.add_annotation(
+        x=0.02,
+        y=0.98,
+        xref="paper",
+        yref="paper",
+        text="↑ Under Budget",
+        showarrow=False,
+        font=dict(color="#2ecc71", size=10),
+        xanchor="left",
     )
-
-    fig.update_layout(
-        title="Spending Distribution by Merchant",
-        template="plotly_white",
-        height=350,
-    )
-
-    fig.update_traces(
-        textposition="inside",
-        textinfo="percent+label",
-        hovertemplate="%{label}<br>€%{value:,.2f}<br>%{percent}<extra></extra>",
+    fig.add_annotation(
+        x=0.02,
+        y=0.02,
+        xref="paper",
+        yref="paper",
+        text="↓ Over Budget",
+        showarrow=False,
+        font=dict(color="#e74c3c", size=10),
+        xanchor="left",
     )
 
     return fig
@@ -558,7 +711,7 @@ def layout():
                                                 "value": "custom",
                                             },
                                         ],
-                                        value="this_year",
+                                        value="all_time",
                                         clearable=False,
                                     ),
                                 ],
@@ -590,16 +743,15 @@ def layout():
                             ),
                             dbc.Col(
                                 [
-                                    dbc.Label("Group By"),
+                                    dbc.Label("Trends Group By"),
                                     dcc.Dropdown(
-                                        id="group-by-selector",
+                                        id="trends-group-by",
                                         options=[
                                             {
                                                 "label": "Budget Type",
                                                 "value": "budget_type",
                                             },
                                             {"label": "Category", "value": "category"},
-                                            {"label": "Merchant", "value": "merchant"},
                                         ],
                                         value="budget_type",
                                         clearable=False,
@@ -635,20 +787,55 @@ def layout():
                     dbc.Col(
                         dbc.Card(
                             [
-                                dbc.CardHeader("Spending Trends"),
+                                dbc.CardHeader("Spending Trends Over Time"),
                                 dbc.CardBody(dcc.Graph(id="spending-trends-chart")),
                             ]
                         ),
-                        width=8,
+                        width=6,
                     ),
                     dbc.Col(
                         dbc.Card(
                             [
-                                dbc.CardHeader("Category Breakdown"),
-                                dbc.CardBody(dcc.Graph(id="category-breakdown-chart")),
+                                dbc.CardHeader(
+                                    dbc.Row(
+                                        [
+                                            dbc.Col("Spending Distribution", width=6),
+                                            dbc.Col(
+                                                dcc.Dropdown(
+                                                    id="distribution-depth",
+                                                    options=[
+                                                        {
+                                                            "label": "Budget Type",
+                                                            "value": "budget_type",
+                                                        },
+                                                        {
+                                                            "label": "Category",
+                                                            "value": "category",
+                                                        },
+                                                        {
+                                                            "label": "Subcategory",
+                                                            "value": "subcategory",
+                                                        },
+                                                        {
+                                                            "label": "Merchant",
+                                                            "value": "merchant",
+                                                        },
+                                                    ],
+                                                    value="budget_type",
+                                                    clearable=False,
+                                                    style={"minWidth": "140px"},
+                                                ),
+                                                width=6,
+                                                className="text-end",
+                                            ),
+                                        ],
+                                        align="center",
+                                    ),
+                                ),
+                                dbc.CardBody(dcc.Graph(id="distribution-chart")),
                             ]
                         ),
-                        width=4,
+                        width=6,
                     ),
                 ],
                 className="mb-4",
@@ -658,7 +845,7 @@ def layout():
                     dbc.Col(
                         dbc.Card(
                             [
-                                dbc.CardHeader("Budget Adherence"),
+                                dbc.CardHeader("Budget Adherence (Surplus / Deficit)"),
                                 dbc.CardBody(dcc.Graph(id="budget-adherence-chart")),
                             ]
                         ),
@@ -667,10 +854,8 @@ def layout():
                     dbc.Col(
                         dbc.Card(
                             [
-                                dbc.CardHeader("Merchant Distribution"),
-                                dbc.CardBody(
-                                    dcc.Graph(id="merchant-distribution-chart")
-                                ),
+                                dbc.CardHeader("Month-to-Month Variance"),
+                                dbc.CardBody(dcc.Graph(id="variance-chart")),
                             ]
                         ),
                         width=6,
@@ -683,29 +868,35 @@ def layout():
                     dbc.Col(
                         dbc.Card(
                             [
-                                dbc.CardHeader("Top Merchants"),
-                                dbc.CardBody(html.Div(id="top-merchants-table")),
-                            ]
+                                dbc.CardHeader("Spending Drift Detection"),
+                                dbc.CardBody(html.Div(id="drift-analysis")),
+                            ],
+                            className="h-100",
                         ),
-                        width=7,
+                        width=5,
                     ),
                     dbc.Col(
-                        [
-                            dbc.Card(
-                                [
-                                    dbc.CardHeader("Month-to-Month Variance"),
-                                    dbc.CardBody(dcc.Graph(id="variance-chart")),
-                                ],
-                                className="mb-3",
-                            ),
-                            dbc.Card(
-                                [
-                                    dbc.CardHeader("Spending Drift Detection"),
-                                    dbc.CardBody(html.Div(id="drift-analysis")),
-                                ]
-                            ),
-                        ],
-                        width=5,
+                        dbc.Card(
+                            [
+                                dbc.CardHeader(
+                                    [
+                                        html.I(className="bi bi-shop me-2"),
+                                        "Top Merchants",
+                                    ]
+                                ),
+                                dbc.CardBody(
+                                    html.Div(
+                                        id="top-merchants-table",
+                                        style={
+                                            "maxHeight": "300px",
+                                            "overflowY": "auto",
+                                        },
+                                    ),
+                                ),
+                            ],
+                            className="h-100",
+                        ),
+                        width=7,
                     ),
                 ],
                 className="mb-4",
@@ -728,9 +919,7 @@ def toggle_custom_dates(preset):
     [
         Output("summary-cards-container", "children"),
         Output("spending-trends-chart", "figure"),
-        Output("category-breakdown-chart", "figure"),
         Output("budget-adherence-chart", "figure"),
-        Output("merchant-distribution-chart", "figure"),
         Output("top-merchants-table", "children"),
         Output("variance-chart", "figure"),
         Output("drift-analysis", "children"),
@@ -739,14 +928,14 @@ def toggle_custom_dates(preset):
     [
         Input("refresh-analytics-btn", "n_clicks"),
         Input("time-range-preset", "value"),
+        Input("trends-group-by", "value"),
     ],
     [
         State("custom-start-date", "value"),
         State("custom-end-date", "value"),
-        State("group-by-selector", "value"),
     ],
 )
-def update_analytics(n_clicks, preset, start_date, end_date, group_by):
+def update_analytics(n_clicks, preset, trends_group_by, start_date, end_date):
     start, end = get_date_range(preset, start_date, end_date)
 
     spending_df = get_spending_data(start, end)
@@ -760,6 +949,9 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
 
     num_months = len(spending_df["month"].unique()) if not spending_df.empty else 1
     avg_monthly = total_spending / num_months if num_months > 0 else 0
+
+    net_savings = total_income - total_spending
+    savings_color = "text-success" if net_savings >= 0 else "text-danger"
 
     summary_cards = dbc.Row(
         [
@@ -795,10 +987,11 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
                 dbc.Card(
                     dbc.CardBody(
                         [
-                            html.H6(
-                                "Avg Monthly Spending", className="text-muted mb-2"
+                            html.H6("Net Savings", className="text-muted mb-2"),
+                            html.H3(
+                                f"€{net_savings:,.2f}",
+                                className=f"mb-0 {savings_color}",
                             ),
-                            html.H3(f"€{avg_monthly:,.2f}", className="mb-0"),
                         ]
                     ),
                     className="h-100",
@@ -809,10 +1002,13 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
                 dbc.Card(
                     dbc.CardBody(
                         [
-                            html.H6("Transactions", className="text-muted mb-2"),
-                            html.H3(f"{num_transactions:,}", className="mb-0"),
+                            html.H6(
+                                "Avg Monthly Spending", className="text-muted mb-2"
+                            ),
+                            html.H3(f"€{avg_monthly:,.2f}", className="mb-0"),
                             html.Small(
-                                f"Avg: €{avg_transaction:.2f}", className="text-muted"
+                                f"{num_transactions:,} transactions",
+                                className="text-muted",
                             ),
                         ]
                     ),
@@ -823,10 +1019,8 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
         ]
     )
 
-    trends_chart = build_spending_trends_chart(spending_df, group_by)
-    category_chart = build_category_breakdown_chart(spending_df)
+    trends_chart = build_spending_trends_chart(spending_df, trends_group_by)
     budget_chart = build_budget_adherence_chart(spending_df, budget_df)
-    merchant_dist_chart = build_merchant_distribution_chart(spending_df)
 
     merchants = get_top_merchants(spending_df, limit=10)
     if not merchants.empty:
@@ -835,11 +1029,11 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
                 html.Thead(
                     html.Tr(
                         [
-                            html.Th("#", style={"width": "40px"}),
+                            html.Th("#", style={"width": "30px"}),
                             html.Th("Merchant"),
                             html.Th("Total Spent", className="text-end"),
-                            html.Th("Transactions", className="text-center"),
-                            html.Th("Avg/Transaction", className="text-end"),
+                            html.Th("Txns", className="text-center"),
+                            html.Th("Avg", className="text-end"),
                         ]
                     )
                 ),
@@ -847,11 +1041,12 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
                     [
                         html.Tr(
                             [
-                                html.Td(row["rank"]),
+                                html.Td(row["rank"], className="text-muted"),
                                 html.Td(
                                     [
-                                        html.Strong(row["description"]),
-                                        html.Br(),
+                                        html.Div(
+                                            row["description"], className="fw-semibold"
+                                        ),
                                         html.Small(
                                             row["categories"], className="text-muted"
                                         ),
@@ -876,9 +1071,12 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
             striped=True,
             hover=True,
             size="sm",
+            className="mb-0",
         )
     else:
-        merchants_table = dbc.Alert("No merchant data available", color="info")
+        merchants_table = dbc.Alert(
+            "No merchant data available", color="info", className="mb-0"
+        )
 
     variance_df = calculate_month_variance(spending_df)
     variance_chart = build_variance_chart(variance_df)
@@ -887,43 +1085,104 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
     if drift:
         if drift["direction"] == "up":
             drift_icon = "bi-graph-up-arrow"
-            drift_color = "text-danger"
-            drift_text = f"Spending increased by {drift['drift_pct']:.1f}%"
+            drift_color = "danger"
+            drift_text = "Spending Increasing"
+            drift_desc = f"Your spending has increased by {drift['drift_pct']:.1f}% (€{drift['drift_amount']:,.0f}/mo more)"
         elif drift["direction"] == "down":
             drift_icon = "bi-graph-down-arrow"
-            drift_color = "text-success"
-            drift_text = f"Spending decreased by {abs(drift['drift_pct']):.1f}%"
+            drift_color = "success"
+            drift_text = "Spending Decreasing"
+            drift_desc = f"Your spending has decreased by {abs(drift['drift_pct']):.1f}% (€{abs(drift['drift_amount']):,.0f}/mo less)"
         else:
-            drift_icon = "bi-dash"
-            drift_color = "text-muted"
-            drift_text = "Spending is stable"
+            drift_icon = "bi-dash-lg"
+            drift_color = "secondary"
+            drift_text = "Spending Stable"
+            drift_desc = "Your spending has remained relatively consistent"
 
         drift_content = html.Div(
             [
-                html.Div(
+                dbc.Alert(
                     [
-                        html.I(className=f"bi {drift_icon} me-2 fs-4 {drift_color}"),
-                        html.Span(drift_text, className=f"fs-5 {drift_color}"),
+                        html.Div(
+                            [
+                                html.I(className=f"bi {drift_icon} me-2 fs-4"),
+                                html.Span(drift_text, className="fs-5 fw-bold"),
+                            ],
+                            className="d-flex align-items-center mb-2",
+                        ),
+                        html.P(drift_desc, className="mb-0"),
                     ],
+                    color=drift_color,
                     className="mb-3",
+                ),
+                html.P(
+                    [
+                        html.I(className="bi bi-info-circle me-2"),
+                        "Comparing two periods of your selected time range:",
+                    ],
+                    className="text-muted small mb-2",
                 ),
                 dbc.Row(
                     [
                         dbc.Col(
                             [
-                                html.Small(
-                                    "Early Period Avg", className="text-muted d-block"
+                                dbc.Card(
+                                    [
+                                        dbc.CardBody(
+                                            [
+                                                html.Div(
+                                                    "Early Period",
+                                                    className="text-muted small",
+                                                ),
+                                                html.Div(
+                                                    drift["early_period"],
+                                                    className="fw-bold",
+                                                ),
+                                                html.Div(
+                                                    f"€{drift['early_avg']:,.0f}/mo avg",
+                                                    className="fs-5 text-primary",
+                                                ),
+                                                html.Small(
+                                                    f"({drift['early_months_count']} months)",
+                                                    className="text-muted",
+                                                ),
+                                            ],
+                                            className="text-center py-2",
+                                        ),
+                                    ],
+                                    className="h-100",
                                 ),
-                                html.Strong(f"€{drift['early_avg']:,.0f}/mo"),
                             ],
                             width=6,
                         ),
                         dbc.Col(
                             [
-                                html.Small(
-                                    "Recent Period Avg", className="text-muted d-block"
+                                dbc.Card(
+                                    [
+                                        dbc.CardBody(
+                                            [
+                                                html.Div(
+                                                    "Recent Period",
+                                                    className="text-muted small",
+                                                ),
+                                                html.Div(
+                                                    drift["recent_period"],
+                                                    className="fw-bold",
+                                                ),
+                                                html.Div(
+                                                    f"€{drift['recent_avg']:,.0f}/mo avg",
+                                                    className=f"fs-5 text-{drift_color}",
+                                                ),
+                                                html.Small(
+                                                    f"({drift['recent_months_count']} months)",
+                                                    className="text-muted",
+                                                ),
+                                            ],
+                                            className="text-center py-2",
+                                        ),
+                                    ],
+                                    className="h-100",
                                 ),
-                                html.Strong(f"€{drift['recent_avg']:,.0f}/mo"),
                             ],
                             width=6,
                         ),
@@ -933,7 +1192,10 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
         )
     else:
         drift_content = dbc.Alert(
-            "Need at least 3 months of data for drift analysis",
+            [
+                html.I(className="bi bi-hourglass me-2"),
+                "Need at least 3 months of data to detect spending drift patterns.",
+            ],
             color="info",
             className="mb-0",
         )
@@ -948,14 +1210,33 @@ def update_analytics(n_clicks, preset, start_date, end_date, group_by):
     return (
         summary_cards,
         trends_chart,
-        category_chart,
         budget_chart,
-        merchant_dist_chart,
         merchants_table,
         variance_chart,
         drift_content,
         store_data,
     )
+
+
+@callback(
+    Output("distribution-chart", "figure"),
+    [
+        Input("distribution-depth", "value"),
+        Input("analytics-data-store", "data"),
+    ],
+)
+def update_distribution_chart(depth, store_data):
+    if not store_data:
+        return go.Figure()
+
+    start = store_data.get("start_date")
+    end = store_data.get("end_date")
+
+    if not start or not end:
+        return go.Figure()
+
+    spending_df = get_spending_data(start, end)
+    return build_distribution_chart(spending_df, depth)
 
 
 @callback(
