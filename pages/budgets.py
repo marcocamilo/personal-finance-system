@@ -372,6 +372,7 @@ def layout():
             dcc.Store(id="current-year", data=year),
             dcc.Store(id="current-month", data=month),
             dcc.Store(id="template-edit-data"),
+            dcc.Store(id="refresh-trigger", data=0),
             html.Div(id="template-items-container", style={"display": "none"}),
             dbc.Modal(
                 [
@@ -488,9 +489,13 @@ def layout():
         Output("budget-page-title", "children"),
         Output("budget-active-template", "children"),
     ],
-    [Input("current-year", "data"), Input("current-month", "data")],
+    [
+        Input("current-year", "data"),
+        Input("current-month", "data"),
+        Input("refresh-trigger", "data"),
+    ],
 )
-def update_budget_view(year, month):
+def update_budget_view(year, month, refresh):
     budget_df = get_current_budget(year, month)
     actual_df = get_actual_spending(year, month)
 
@@ -1134,16 +1139,16 @@ def create_detailed_budget_section(type_df, budget_type, year, month):
 
 
 @callback(
-    [
-        Output("budget-summary-cards", "children", allow_duplicate=True),
-        Output("budget-details", "children", allow_duplicate=True),
-        Output("budget-active-template", "children", allow_duplicate=True),
-    ],
+    Output("refresh-trigger", "data", allow_duplicate=True),
     [Input("template-selector", "value")],
-    [State("current-year", "data"), State("current-month", "data")],
+    [
+        State("current-year", "data"),
+        State("current-month", "data"),
+        State("refresh-trigger", "data"),
+    ],
     prevent_initial_call=True,
 )
-def switch_template(template_id, year, month):
+def switch_template(template_id, year, month, current_refresh):
     if not template_id:
         raise PreventUpdate
 
@@ -1156,21 +1161,7 @@ def switch_template(template_id, year, month):
         "DELETE FROM monthly_budgets WHERE year = ? AND month = ?", (year, month)
     )
 
-    budget_df = get_current_budget(year, month)
-    actual_df = get_actual_spending(year, month)
-    merged = budget_df.merge(actual_df, on=["budget_type", "category"], how="left")
-    merged["actual_amount"] = merged["actual_amount"].fillna(0)
-    merged["transaction_count"] = merged["transaction_count"].fillna(0).astype(int)
-
-    summary = create_summary_cards(merged)
-    details = create_budget_details(merged, year, month)
-
-    active_template = db.fetch_one(
-        "SELECT name FROM budget_templates WHERE is_active = 1"
-    )[0]
-    template_text = f"Active Template: {active_template}"
-
-    return summary, details, template_text
+    return current_refresh + 1
 
 
 @callback(
@@ -1297,19 +1288,26 @@ def open_edit_modal(n_clicks, btn_ids, is_open):
 
 
 @callback(
-    Output("edit-budget-modal", "is_open", allow_duplicate=True),
+    [
+        Output("edit-budget-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data", allow_duplicate=True),
+    ],
     [Input("save-budget-edit", "n_clicks"), Input("cancel-budget-edit", "n_clicks")],
-    [State("edit-budget-amount", "value"), State("edit-budget-data", "data")],
+    [
+        State("edit-budget-amount", "value"),
+        State("edit-budget-data", "data"),
+        State("refresh-trigger", "data"),
+    ],
     prevent_initial_call=True,
 )
-def save_budget_edit(save_clicks, cancel_clicks, amount, data):
+def save_budget_edit(save_clicks, cancel_clicks, amount, data, current_refresh):
     from dash import ctx
 
     if not ctx.triggered_id:
-        return False
+        return False, current_refresh
 
     if ctx.triggered_id == "cancel-budget-edit":
-        return False
+        return False, current_refresh
 
     if ctx.triggered_id == "save-budget-edit" and amount is not None:
         db.write_execute(
@@ -1339,7 +1337,9 @@ def save_budget_edit(save_clicks, cancel_clicks, amount, data):
             ),
         )
 
-    return False
+        return False, current_refresh + 1
+
+    return False, current_refresh
 
 
 @callback(
@@ -1446,17 +1446,32 @@ def toggle_template_modal(edit_click, cancel_click, save_click, is_open):
 
 
 @callback(
-    Output("edit-template-modal", "is_open", allow_duplicate=True),
+    [
+        Output("edit-template-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data", allow_duplicate=True),
+    ],
     [Input("save-template-edit", "n_clicks")],
     [
         State({"type": "template-amount", "index": dash.ALL}, "value"),
         State("template-edit-data", "data"),
         State("template-save-as-new", "value"),
         State("template-new-name", "value"),
+        State("current-year", "data"),
+        State("current-month", "data"),
+        State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
 )
-def save_template(save_click, amounts, template_data, save_as_new, new_template_name):
+def save_template(
+    save_click,
+    amounts,
+    template_data,
+    save_as_new,
+    new_template_name,
+    year,
+    month,
+    current_refresh,
+):
     if not save_click or not template_data or not amounts:
         raise PreventUpdate
 
@@ -1491,7 +1506,11 @@ def save_template(save_click, amounts, template_data, save_as_new, new_template_
                 ),
             )
 
-    return False
+    db.write_execute(
+        "DELETE FROM monthly_budgets WHERE year = ? AND month = ?", (year, month)
+    )
+
+    return False, current_refresh + 1
 
 
 @callback(
@@ -1948,12 +1967,16 @@ def create_template_item_row(item, idx):
 
 
 @callback(
-    Output("budget-summary-cards", "children", allow_duplicate=True),
+    Output("refresh-trigger", "data", allow_duplicate=True),
     [Input("reset-budget-btn", "n_clicks")],
-    [State("current-year", "data"), State("current-month", "data")],
+    [
+        State("current-year", "data"),
+        State("current-month", "data"),
+        State("refresh-trigger", "data"),
+    ],
     prevent_initial_call=True,
 )
-def reset_to_template(n_clicks, year, month):
+def reset_to_template(n_clicks, year, month, current_refresh):
     if not n_clicks:
         raise PreventUpdate
 
@@ -1961,13 +1984,7 @@ def reset_to_template(n_clicks, year, month):
         "DELETE FROM monthly_budgets WHERE year = ? AND month = ?", (year, month)
     )
 
-    budget_df = get_current_budget(year, month)
-    actual_df = get_actual_spending(year, month)
-    merged = budget_df.merge(actual_df, on=["budget_type", "category"], how="left")
-    merged["actual_amount"] = merged["actual_amount"].fillna(0)
-    merged["transaction_count"] = merged["transaction_count"].fillna(0).astype(int)
-
-    return create_summary_cards(merged)
+    return current_refresh + 1
 
 
 @callback(
@@ -2215,7 +2232,10 @@ def toggle_new_stream_fields(stream_value):
 
 
 @callback(
-    Output("record-income-modal", "is_open", allow_duplicate=True),
+    [
+        Output("record-income-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data", allow_duplicate=True),
+    ],
     [
         Input("save-income-record", "n_clicks"),
         Input("cancel-income-record", "n_clicks"),
@@ -2230,6 +2250,7 @@ def toggle_new_stream_fields(stream_value):
         State("new-stream-frequency", "value"),
         State("new-stream-owner", "value"),
         State("income-record-data", "data"),
+        State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
 )
@@ -2245,19 +2266,20 @@ def save_income_record(
     new_frequency,
     new_owner,
     data,
+    current_refresh,
 ):
     from dash import ctx
 
     if not ctx.triggered_id:
-        return False
+        return False, current_refresh
 
     if ctx.triggered_id == "cancel-income-record":
-        return False
+        return False, current_refresh
 
     if ctx.triggered_id == "save-income-record":
         if stream_id == "new":
             if not new_name or not new_amount:
-                return True
+                return True, current_refresh
 
             cursor = db.write_execute(
                 "INSERT INTO income_streams (name, amount, frequency, is_active, owner) VALUES (?, ?, ?, 1, ?)",
@@ -2268,7 +2290,7 @@ def save_income_record(
             description = new_name
 
         if amount is None:
-            return True
+            return True, current_refresh
 
         if not description:
             stream_name = db.fetch_one(
@@ -2281,16 +2303,21 @@ def save_income_record(
             (date, description, float(amount), stream_id, data["year"], data["month"]),
         )
 
-    return False
+        return False, current_refresh + 1
+
+    return False, current_refresh
 
 
 @callback(
-    Output("current-year", "data", allow_duplicate=True),
+    Output("refresh-trigger", "data", allow_duplicate=True),
     [Input({"type": "delete-income-btn", "income_id": dash.ALL}, "n_clicks")],
-    [State({"type": "delete-income-btn", "income_id": dash.ALL}, "id")],
+    [
+        State({"type": "delete-income-btn", "income_id": dash.ALL}, "id"),
+        State("refresh-trigger", "data"),
+    ],
     prevent_initial_call=True,
 )
-def delete_income_transaction(n_clicks, btn_ids):
+def delete_income_transaction(n_clicks, btn_ids, current_refresh):
     from dash import ctx
 
     if not any(n_clicks):
@@ -2304,7 +2331,7 @@ def delete_income_transaction(n_clicks, btn_ids):
 
     db.write_execute("DELETE FROM income_transactions WHERE id = ?", (income_id,))
 
-    return dash.no_update
+    return current_refresh + 1
 
 
 @callback(
@@ -2532,7 +2559,10 @@ def open_edit_stream_modal(n_clicks, btn_ids, is_open):
 
 
 @callback(
-    Output("edit-stream-modal", "is_open", allow_duplicate=True),
+    [
+        Output("edit-stream-modal", "is_open", allow_duplicate=True),
+        Output("income-streams-list", "children", allow_duplicate=True),
+    ],
     [Input("save-stream-edit", "n_clicks"), Input("cancel-stream-edit", "n_clicks")],
     [
         State("edit-stream-name", "value"),
@@ -2549,10 +2579,10 @@ def save_stream_edit(
     from dash import ctx
 
     if not ctx.triggered_id:
-        return False
+        return False, dash.no_update
 
     if ctx.triggered_id == "cancel-stream-edit":
-        return False
+        return False, dash.no_update
 
     if ctx.triggered_id == "save-stream-edit" and name and amount:
         db.write_execute(
@@ -2560,7 +2590,9 @@ def save_stream_edit(
             (name, float(amount), frequency, owner, stream_id),
         )
 
-    return False
+        return False, build_streams_list()
+
+    return False, dash.no_update
 
 
 @callback(
@@ -2734,23 +2766,27 @@ def open_allocation_modal(add_clicks, edit_clicks, add_ids, edit_ids, is_open):
 
 
 @callback(
-    Output("allocation-modal", "is_open", allow_duplicate=True),
+    [
+        Output("allocation-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data", allow_duplicate=True),
+    ],
     [Input("save-allocation", "n_clicks"), Input("cancel-allocation", "n_clicks")],
     [
         State("allocation-bucket", "value"),
         State("allocation-amount", "value"),
         State("allocation-data", "data"),
+        State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
 )
-def save_allocation(save_click, cancel_click, bucket_id, amount, data):
+def save_allocation(save_click, cancel_click, bucket_id, amount, data, current_refresh):
     from dash import ctx
 
     if not ctx.triggered_id:
-        return False
+        return False, current_refresh
 
     if ctx.triggered_id == "cancel-allocation":
-        return False
+        return False, current_refresh
 
     if ctx.triggered_id == "save-allocation" and bucket_id and amount and amount > 0:
         year = data["year"]
@@ -2766,11 +2802,13 @@ def save_allocation(save_click, cancel_click, bucket_id, amount, data):
             (bucket_id, year, month, float(amount)),
         )
 
-    return False
+        return False, current_refresh + 1
+
+    return False, current_refresh
 
 
 @callback(
-    Output("current-year", "data", allow_duplicate=True),
+    Output("refresh-trigger", "data", allow_duplicate=True),
     [
         Input(
             {
@@ -2791,11 +2829,12 @@ def save_allocation(save_click, cancel_click, bucket_id, amount, data):
                 "month": dash.ALL,
             },
             "id",
-        )
+        ),
+        State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
 )
-def delete_allocation(n_clicks, btn_ids):
+def delete_allocation(n_clicks, btn_ids, current_refresh):
     from dash import ctx
 
     if not any(n_clicks):
@@ -2836,11 +2875,11 @@ def delete_allocation(n_clicks, btn_ids):
         (bucket_id, year, month),
     )
 
-    return dash.no_update
+    return current_refresh + 1
 
 
 @callback(
-    Output("current-year", "data", allow_duplicate=True),
+    Output("refresh-trigger", "data", allow_duplicate=True),
     [
         Input(
             {
@@ -2861,11 +2900,12 @@ def delete_allocation(n_clicks, btn_ids):
                 "month": dash.ALL,
             },
             "id",
-        )
+        ),
+        State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
 )
-def allocate_to_bucket(n_clicks, btn_ids):
+def allocate_to_bucket(n_clicks, btn_ids, current_refresh):
     from dash import ctx
 
     if not any(n_clicks):
@@ -2910,7 +2950,7 @@ def allocate_to_bucket(n_clicks, btn_ids):
             (amount, today, bucket_id, year, month),
         )
 
-    return dash.no_update
+    return current_refresh + 1
 
 
 if __name__ == "__main__":
