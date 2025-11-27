@@ -4,6 +4,7 @@ View, filter, and manage all transactions
 """
 
 import calendar
+import uuid as uuid_lib
 from datetime import datetime
 
 import dash
@@ -37,9 +38,41 @@ def layout():
         {"label": subcat[0], "value": subcat[0]} for subcat in subcategories
     ]
 
+    new_tx_subcat_options = [
+        {"label": subcat[0], "value": subcat[0]} for subcat in subcategories
+    ]
+
     return dbc.Container(
         [
-            html.H2("Transactions", className="mb-4"),
+            dbc.Row(
+                [
+                    dbc.Col(
+                        [
+                            html.H2("Transactions", className="mb-0"),
+                            html.P(
+                                "View, filter, and manage all transactions",
+                                className="text-muted",
+                            ),
+                        ],
+                        width=8,
+                    ),
+                    dbc.Col(
+                        [
+                            dbc.Button(
+                                [
+                                    html.I(className="bi bi-plus-circle me-2"),
+                                    "Add Transaction",
+                                ],
+                                id="add-transaction-btn",
+                                color="primary",
+                            ),
+                        ],
+                        width=4,
+                        className="text-end",
+                    ),
+                ],
+                className="mb-4",
+            ),
             dbc.Row(
                 [
                     dbc.Col(
@@ -132,6 +165,141 @@ def layout():
             ),
             dbc.Modal(
                 [
+                    dbc.ModalHeader("Add Manual Transaction"),
+                    dbc.ModalBody(
+                        [
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            dbc.Label("Date *"),
+                                            dbc.Input(
+                                                id="new-tx-date",
+                                                type="date",
+                                                value=today.strftime("%Y-%m-%d"),
+                                            ),
+                                        ],
+                                        width=4,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            dbc.Label("Amount *"),
+                                            dbc.Input(
+                                                id="new-tx-amount",
+                                                type="number",
+                                                step=0.01,
+                                                placeholder="0.00",
+                                            ),
+                                        ],
+                                        width=4,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            dbc.Label("Currency"),
+                                            dcc.Dropdown(
+                                                id="new-tx-currency",
+                                                options=[
+                                                    {
+                                                        "label": "EUR (€)",
+                                                        "value": "EUR",
+                                                    },
+                                                    {
+                                                        "label": "USD ($)",
+                                                        "value": "USD",
+                                                    },
+                                                ],
+                                                value="EUR",
+                                                clearable=False,
+                                            ),
+                                        ],
+                                        width=4,
+                                    ),
+                                ],
+                                className="mb-3",
+                            ),
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            dbc.Label("Description / Merchant *"),
+                                            dbc.Input(
+                                                id="new-tx-description",
+                                                type="text",
+                                                placeholder="e.g., Coffee Shop, Grocery Store",
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                                className="mb-3",
+                            ),
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            dbc.Label("Subcategory *"),
+                                            dcc.Dropdown(
+                                                id="new-tx-subcategory",
+                                                options=new_tx_subcat_options,
+                                                placeholder="Select subcategory...",
+                                            ),
+                                        ],
+                                        width=6,
+                                    ),
+                                    dbc.Col(
+                                        [
+                                            dbc.Label("Merchant (optional)"),
+                                            dbc.Input(
+                                                id="new-tx-merchant",
+                                                type="text",
+                                                placeholder="Merchant name for tracking",
+                                            ),
+                                        ],
+                                        width=6,
+                                    ),
+                                ],
+                                className="mb-3",
+                            ),
+                            dbc.Row(
+                                [
+                                    dbc.Col(
+                                        [
+                                            dbc.Label("Notes (optional)"),
+                                            dbc.Textarea(
+                                                id="new-tx-notes",
+                                                placeholder="Additional notes...",
+                                                style={"height": "80px"},
+                                            ),
+                                        ],
+                                    ),
+                                ],
+                                className="mb-3",
+                            ),
+                            html.Small(
+                                "* Required fields. Manual transactions are marked separately from imported ones.",
+                                className="text-muted",
+                            ),
+                        ]
+                    ),
+                    dbc.ModalFooter(
+                        [
+                            dbc.Button(
+                                "Cancel",
+                                id="cancel-add-tx",
+                                color="secondary",
+                                outline=True,
+                            ),
+                            dbc.Button(
+                                "Add Transaction", id="save-add-tx", color="primary"
+                            ),
+                        ]
+                    ),
+                ],
+                id="add-tx-modal",
+                size="lg",
+                is_open=False,
+            ),
+            dbc.Modal(
+                [
                     dbc.ModalHeader("Edit Transaction"),
                     dbc.ModalBody([html.Div(id="edit-transaction-form")]),
                     dbc.ModalFooter(
@@ -178,6 +346,7 @@ def layout():
                 is_open=False,
             ),
             dcc.Store(id="subcat-options", data=subcat_options),
+            dcc.Store(id="new-tx-subcat-options", data=new_tx_subcat_options),
             dcc.Store(id="delete-uuid-store"),
             dcc.Store(id="refresh-trigger", data=0),
         ],
@@ -233,7 +402,8 @@ def update_transactions_table(
             subcategory,
             budget_type,
             is_quorum,
-            card_number
+            card_number,
+            is_manual
         FROM transactions
         WHERE 1=1
     """
@@ -278,6 +448,7 @@ def update_transactions_table(
 
     if not df.empty:
         df["is_quorum"] = df["is_quorum"].astype(int).astype(bool)
+        df["is_manual"] = df["is_manual"].fillna(0).astype(int).astype(bool)
 
     stats = create_stats_row(df)
 
@@ -299,6 +470,7 @@ def create_stats_row(df):
     total_count = len(df)
     your_count = (~df["is_quorum"]).sum()
     quorum_count = df["is_quorum"].sum()
+    manual_count = df["is_manual"].sum() if "is_manual" in df.columns else 0
 
     your_eur = df[~df["is_quorum"]]["amount_eur"].sum()
     your_usd = df[~df["is_quorum"]]["amount_usd"].sum()
@@ -333,8 +505,8 @@ def create_stats_row(df):
             ),
             dbc.Col(
                 [
-                    html.Small("Total USD", className="text-muted d-block"),
-                    html.Strong(f"${your_usd + quorum_usd:,.2f}"),
+                    html.Small("Manual Entries", className="text-muted d-block"),
+                    html.Strong(str(manual_count)),
                 ],
                 width=2,
             ),
@@ -370,7 +542,18 @@ def create_transactions_table(df):
 
     rows = []
     for idx, row in df.iterrows():
-        badge_color = "success" if row["is_quorum"] else "primary"
+        is_manual = row.get("is_manual", False)
+
+        if is_manual:
+            badge_color = "info"
+            type_badge = dbc.Badge("Manual", className="ms-2", pill=True)
+        elif row["is_quorum"]:
+            badge_color = "success"
+            type_badge = None
+        else:
+            badge_color = "primary"
+            type_badge = None
+
         amount_display = (
             f"€{row['amount_eur']:.2f}"
             if not row["is_quorum"]
@@ -386,6 +569,7 @@ def create_transactions_table(df):
                     html.Td(
                         [
                             html.Strong(row["description"][:50]),
+                            type_badge,
                             html.Br() if row["card_number"] else "",
                             html.Small(
                                 f"Card: ...{row['card_number']}", className="text-muted"
@@ -440,6 +624,112 @@ def create_transactions_table(df):
 
 
 @callback(
+    Output("add-tx-modal", "is_open"),
+    [Input("add-transaction-btn", "n_clicks"), Input("cancel-add-tx", "n_clicks")],
+    [State("add-tx-modal", "is_open")],
+    prevent_initial_call=True,
+)
+def toggle_add_tx_modal(add_clicks, cancel_clicks, is_open):
+    """Toggle add transaction modal"""
+    if ctx.triggered_id in ["add-transaction-btn", "cancel-add-tx"]:
+        return not is_open
+    return is_open
+
+
+@callback(
+    [
+        Output("add-tx-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data", allow_duplicate=True),
+        Output("new-tx-date", "value"),
+        Output("new-tx-amount", "value"),
+        Output("new-tx-description", "value"),
+        Output("new-tx-subcategory", "value"),
+        Output("new-tx-merchant", "value"),
+        Output("new-tx-notes", "value"),
+    ],
+    [Input("save-add-tx", "n_clicks")],
+    [
+        State("new-tx-date", "value"),
+        State("new-tx-amount", "value"),
+        State("new-tx-currency", "value"),
+        State("new-tx-description", "value"),
+        State("new-tx-subcategory", "value"),
+        State("new-tx-merchant", "value"),
+        State("new-tx-notes", "value"),
+        State("refresh-trigger", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def save_new_transaction(
+    n_clicks,
+    date,
+    amount,
+    currency,
+    description,
+    subcategory,
+    merchant,
+    notes,
+    current_trigger,
+):
+    """Save a new manual transaction"""
+    if not n_clicks:
+        raise PreventUpdate
+
+    if not all([date, amount, description, subcategory]):
+        raise PreventUpdate
+
+    category_info = db.fetch_one(
+        "SELECT category, budget_type FROM categories WHERE subcategory = ?",
+        (subcategory,),
+    )
+
+    if not category_info:
+        raise PreventUpdate
+
+    category, budget_type = category_info
+
+    tx_uuid = str(uuid_lib.uuid4())
+
+    amount_val = float(amount)
+    if currency == "EUR":
+        amount_eur = amount_val
+        amount_usd = amount_val * 1.08
+    else:
+        amount_usd = amount_val
+        amount_eur = amount_val / 1.08
+
+    merchant_name = merchant if merchant else description
+
+    full_description = description
+    if notes:
+        full_description = f"{description} | {notes}"
+
+    db.write_execute(
+        """
+        INSERT INTO transactions (
+            uuid, date, description, merchant, amount_usd, amount_eur,
+            category, subcategory, budget_type, is_quorum, is_manual,
+            created_at, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """,
+        (
+            tx_uuid,
+            date,
+            full_description,
+            merchant_name,
+            amount_usd,
+            amount_eur,
+            category,
+            subcategory,
+            budget_type,
+        ),
+    )
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    return False, current_trigger + 1, today, None, None, None, None, None
+
+
+@callback(
     [Output("edit-modal", "is_open"), Output("edit-transaction-form", "children")],
     [Input({"type": "edit-btn", "index": ALL}, "n_clicks")],
     [
@@ -463,7 +753,7 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
     tx = db.fetch_df(
         """
         SELECT uuid, date, description, amount_usd, amount_eur, 
-               category, subcategory, is_quorum
+               category, subcategory, is_quorum, is_manual
         FROM transactions
         WHERE uuid = ?
     """,

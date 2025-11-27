@@ -24,6 +24,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     -- Metadata
     card_number TEXT,
     is_quorum BOOLEAN DEFAULT 0,
+    is_manual BOOLEAN DEFAULT 0,
     notes TEXT,
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
