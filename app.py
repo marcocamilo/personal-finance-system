@@ -55,14 +55,6 @@ app.layout = dbc.Container(
                                     active="exact",
                                 ),
                                 dbc.NavLink(
-                                    [
-                                        html.I(className="bi bi-receipt me-2"),
-                                        "Transactions",
-                                    ],
-                                    href="/transactions",
-                                    active="exact",
-                                ),
-                                dbc.NavLink(
                                     [html.I(className="bi bi-wallet2 me-2"), "Budgets"],
                                     href="/budgets",
                                     active="exact",
@@ -73,6 +65,14 @@ app.layout = dbc.Container(
                                         "Savings",
                                     ],
                                     href="/savings",
+                                    active="exact",
+                                ),
+                                dbc.NavLink(
+                                    [
+                                        html.I(className="bi bi-receipt me-2"),
+                                        "Transactions",
+                                    ],
+                                    href="/transactions",
                                     active="exact",
                                 ),
                                 dbc.NavLink(

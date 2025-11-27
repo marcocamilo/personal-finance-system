@@ -277,6 +277,32 @@ def render_dashboard(year, month):
             dbc.Row(
                 [
                     dbc.Col(
+                        [
+                            dbc.Alert(
+                                [
+                                    html.I(className="bi bi-exclamation-triangle me-2"),
+                                    f"{uncategorized_count} transaction(s) need categorization. ",
+                                    dbc.Button(
+                                        "Review Now",
+                                        href="/transactions",
+                                        color="warning",
+                                        size="sm",
+                                        className="ms-2",
+                                    ),
+                                ],
+                                color="warning",
+                                className="mb-0",
+                            )
+                        ]
+                    )
+                ],
+                className="mb-4",
+            )
+            if uncategorized_count > 0
+            else None,
+            dbc.Row(
+                [
+                    dbc.Col(
                         dbc.Card(
                             dbc.CardBody(
                                 [
@@ -340,6 +366,7 @@ def render_dashboard(year, month):
                                     ),
                                 ]
                             ),
+                            color="muted",
                             outline=True,
                         ),
                         width=3,
@@ -369,32 +396,6 @@ def render_dashboard(year, month):
                 ],
                 className="mb-4",
             ),
-            dbc.Row(
-                [
-                    dbc.Col(
-                        [
-                            dbc.Alert(
-                                [
-                                    html.I(className="bi bi-exclamation-triangle me-2"),
-                                    f"{uncategorized_count} transaction(s) need categorization. ",
-                                    dbc.Button(
-                                        "Review Now",
-                                        href="/transactions",
-                                        color="warning",
-                                        size="sm",
-                                        className="ms-2",
-                                    ),
-                                ],
-                                color="warning",
-                                className="mb-0",
-                            )
-                        ]
-                    )
-                ],
-                className="mb-4",
-            )
-            if uncategorized_count > 0
-            else html.Div(),
             dbc.Row(
                 [
                     dbc.Col(
