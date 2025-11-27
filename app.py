@@ -69,6 +69,14 @@ app.layout = dbc.Container(
                                 ),
                                 dbc.NavLink(
                                     [
+                                        html.I(className="bi bi-bar-chart me-2"),
+                                        "Analytics",
+                                    ],
+                                    href="/analytics",
+                                    active="exact",
+                                ),
+                                dbc.NavLink(
+                                    [
                                         html.I(className="bi bi-receipt me-2"),
                                         "Transactions",
                                     ],
