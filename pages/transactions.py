@@ -221,11 +221,11 @@ def layout():
                                 [
                                     dbc.Col(
                                         [
-                                            dbc.Label("Description / Merchant *"),
+                                            dbc.Label("Description *"),
                                             dbc.Input(
                                                 id="new-tx-description",
                                                 type="text",
-                                                placeholder="e.g., Coffee Shop, Grocery Store",
+                                                placeholder="e.g., REWE Grocery, Coffee Shop",
                                             ),
                                         ],
                                     ),
@@ -241,33 +241,6 @@ def layout():
                                                 id="new-tx-subcategory",
                                                 options=new_tx_subcat_options,
                                                 placeholder="Select subcategory...",
-                                            ),
-                                        ],
-                                        width=6,
-                                    ),
-                                    dbc.Col(
-                                        [
-                                            dbc.Label("Merchant (optional)"),
-                                            dbc.Input(
-                                                id="new-tx-merchant",
-                                                type="text",
-                                                placeholder="Merchant name for tracking",
-                                            ),
-                                        ],
-                                        width=6,
-                                    ),
-                                ],
-                                className="mb-3",
-                            ),
-                            dbc.Row(
-                                [
-                                    dbc.Col(
-                                        [
-                                            dbc.Label("Notes (optional)"),
-                                            dbc.Textarea(
-                                                id="new-tx-notes",
-                                                placeholder="Additional notes...",
-                                                style={"height": "80px"},
                                             ),
                                         ],
                                     ),
@@ -391,22 +364,46 @@ def update_transactions_table(
 ):
     """Update transactions table based on filters"""
 
-    query = """
-        SELECT 
-            uuid,
-            date,
-            description,
-            amount_usd,
-            amount_eur,
-            category,
-            subcategory,
-            budget_type,
-            is_quorum,
-            card_number,
-            is_manual
-        FROM transactions
-        WHERE 1=1
-    """
+    try:
+        db.fetch_one("SELECT is_manual FROM transactions LIMIT 1")
+        has_manual_column = True
+    except:
+        has_manual_column = False
+
+    if has_manual_column:
+        query = """
+            SELECT 
+                uuid,
+                date,
+                description,
+                amount_usd,
+                amount_eur,
+                category,
+                subcategory,
+                budget_type,
+                is_quorum,
+                card_number,
+                is_manual
+            FROM transactions
+            WHERE 1=1
+        """
+    else:
+        query = """
+            SELECT 
+                uuid,
+                date,
+                description,
+                amount_usd,
+                amount_eur,
+                category,
+                subcategory,
+                budget_type,
+                is_quorum,
+                card_number,
+                0 as is_manual
+            FROM transactions
+            WHERE 1=1
+        """
     params = []
 
     if month and month != "all":
@@ -506,7 +503,7 @@ def create_stats_row(df):
             dbc.Col(
                 [
                     html.Small("Manual Entries", className="text-muted d-block"),
-                    html.Strong(str(manual_count)),
+                    html.Strong(str(manual_count), className="text-info"),
                 ],
                 width=2,
             ),
@@ -546,7 +543,7 @@ def create_transactions_table(df):
 
         if is_manual:
             badge_color = "info"
-            type_badge = dbc.Badge("Manual", className="ms-2", pill=True)
+            type_badge = dbc.Badge("Manual", color="info", className="ms-2", pill=True)
         elif row["is_quorum"]:
             badge_color = "success"
             type_badge = None
@@ -644,8 +641,6 @@ def toggle_add_tx_modal(add_clicks, cancel_clicks, is_open):
         Output("new-tx-amount", "value"),
         Output("new-tx-description", "value"),
         Output("new-tx-subcategory", "value"),
-        Output("new-tx-merchant", "value"),
-        Output("new-tx-notes", "value"),
     ],
     [Input("save-add-tx", "n_clicks")],
     [
@@ -654,22 +649,12 @@ def toggle_add_tx_modal(add_clicks, cancel_clicks, is_open):
         State("new-tx-currency", "value"),
         State("new-tx-description", "value"),
         State("new-tx-subcategory", "value"),
-        State("new-tx-merchant", "value"),
-        State("new-tx-notes", "value"),
         State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
 )
 def save_new_transaction(
-    n_clicks,
-    date,
-    amount,
-    currency,
-    description,
-    subcategory,
-    merchant,
-    notes,
-    current_trigger,
+    n_clicks, date, amount, currency, description, subcategory, current_trigger
 ):
     """Save a new manual transaction"""
     if not n_clicks:
@@ -698,25 +683,18 @@ def save_new_transaction(
         amount_usd = amount_val
         amount_eur = amount_val / 1.08
 
-    merchant_name = merchant if merchant else description
-
-    full_description = description
-    if notes:
-        full_description = f"{description} | {notes}"
-
     db.write_execute(
         """
         INSERT INTO transactions (
-            uuid, date, description, merchant, amount_usd, amount_eur,
+            uuid, date, description, amount_usd, amount_eur,
             category, subcategory, budget_type, is_quorum, is_manual,
             created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
         """,
         (
             tx_uuid,
             date,
-            full_description,
-            merchant_name,
+            description,
             amount_usd,
             amount_eur,
             category,
@@ -726,7 +704,7 @@ def save_new_transaction(
     )
 
     today = datetime.now().strftime("%Y-%m-%d")
-    return False, current_trigger + 1, today, None, None, None, None, None
+    return False, current_trigger + 1, today, None, None, None
 
 
 @callback(
@@ -753,7 +731,7 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
     tx = db.fetch_df(
         """
         SELECT uuid, date, description, amount_usd, amount_eur, 
-               category, subcategory, is_quorum, is_manual
+               category, subcategory, is_quorum
         FROM transactions
         WHERE uuid = ?
     """,
@@ -764,8 +742,16 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
         return False, []
 
     tx_data = tx.iloc[0]
+    is_quorum = tx_data["is_quorum"]
 
-    suggestions = categorizer.categorize(tx_data["description"], tx_data["is_quorum"])
+    if is_quorum:
+        currency = "USD"
+        amount = tx_data["amount_usd"]
+    else:
+        currency = "EUR"
+        amount = tx_data["amount_eur"]
+
+    suggestions = categorizer.categorize(tx_data["description"], is_quorum)
     suggestion_text = ""
     if (
         suggestions["confidence"] > 0
@@ -773,24 +759,64 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
     ):
         suggestion_text = f"💡 Suggested: {suggestions['subcategory']} ({suggestions['confidence']}% confidence)"
 
+    edit_subcat_options = [opt for opt in subcat_options if opt["value"] != "all"]
+
     form = [
         dbc.Row(
             [
                 dbc.Col(
-                    [html.Strong("Merchant:"), html.P(tx_data["description"])], width=6
+                    [
+                        dbc.Label("Date"),
+                        dbc.Input(
+                            id="edit-tx-date",
+                            type="date",
+                            value=tx_data["date"],
+                        ),
+                    ],
+                    width=4,
                 ),
                 dbc.Col(
                     [
-                        html.Strong("Amount:"),
-                        html.P(
-                            f"€{tx_data['amount_eur']:.2f}"
-                            if not tx_data["is_quorum"]
-                            else f"${tx_data['amount_usd']:.2f}"
+                        dbc.Label("Amount"),
+                        dbc.Input(
+                            id="edit-tx-amount",
+                            type="number",
+                            step=0.01,
+                            value=round(amount, 2),
                         ),
                     ],
-                    width=3,
+                    width=4,
                 ),
-                dbc.Col([html.Strong("Date:"), html.P(tx_data["date"])], width=3),
+                dbc.Col(
+                    [
+                        dbc.Label("Currency"),
+                        dcc.Dropdown(
+                            id="edit-tx-currency",
+                            options=[
+                                {"label": "EUR (€)", "value": "EUR"},
+                                {"label": "USD ($)", "value": "USD"},
+                            ],
+                            value=currency,
+                            clearable=False,
+                        ),
+                    ],
+                    width=4,
+                ),
+            ],
+            className="mb-3",
+        ),
+        dbc.Row(
+            [
+                dbc.Col(
+                    [
+                        dbc.Label("Description"),
+                        dbc.Input(
+                            id="edit-tx-description",
+                            type="text",
+                            value=tx_data["description"],
+                        ),
+                    ],
+                ),
             ],
             className="mb-3",
         ),
@@ -801,15 +827,15 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
                         dbc.Label("Subcategory"),
                         dcc.Dropdown(
                             id="edit-subcategory",
-                            options=subcat_options,
+                            options=edit_subcat_options,
                             value=tx_data["subcategory"],
                             clearable=False,
                         ),
                         html.Small(suggestion_text, className="text-info mt-1")
                         if suggestion_text
                         else html.Div(),
-                    ]
-                )
+                    ],
+                ),
             ],
             className="mb-3",
         ),
@@ -821,18 +847,32 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
                             id="apply-mapping-checkbox",
                             options=[
                                 {
-                                    "label": " Apply this mapping to all similar merchants",
+                                    "label": " Apply category to all transactions with same description",
                                     "value": "apply",
                                 }
                             ],
                             value=[],
                             switch=True,
-                        )
+                        ),
                     ]
                 )
-            ]
+            ],
+            className="mb-3",
+        ),
+        html.Div(
+            dbc.Alert(
+                [
+                    html.I(className="bi bi-info-circle me-2"),
+                    "This is a Quorum transaction. Currency cannot be changed.",
+                ],
+                color="info",
+                className="mb-0 py-2",
+            )
+            if is_quorum
+            else html.Div()
         ),
         dcc.Store(id="edit-uuid", data=uuid),
+        dcc.Store(id="edit-is-quorum", data=is_quorum),
     ]
 
     return True, form
@@ -846,14 +886,29 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
     [Input("save-edit", "n_clicks"), Input("cancel-edit", "n_clicks")],
     [
         State("edit-uuid", "data"),
+        State("edit-tx-date", "value"),
+        State("edit-tx-amount", "value"),
+        State("edit-tx-currency", "value"),
+        State("edit-tx-description", "value"),
         State("edit-subcategory", "value"),
         State("apply-mapping-checkbox", "value"),
+        State("edit-is-quorum", "data"),
         State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
 )
 def save_transaction_edit(
-    save_clicks, cancel_clicks, uuid, subcategory, apply_mapping, current_trigger
+    save_clicks,
+    cancel_clicks,
+    uuid,
+    date,
+    amount,
+    currency,
+    description,
+    subcategory,
+    apply_mapping,
+    is_quorum,
+    current_trigger,
 ):
     """Save transaction edits"""
     if not ctx.triggered_id:
@@ -862,19 +917,63 @@ def save_transaction_edit(
     if ctx.triggered_id == "cancel-edit":
         return False, current_trigger
 
-    if ctx.triggered_id == "save-edit" and subcategory:
-        category_info = db.fetch_all(
-            """
-            SELECT category, budget_type
-            FROM categories
-            WHERE subcategory = ?
-        """,
+    if ctx.triggered_id == "save-edit":
+        if not all([date, amount, description, subcategory]):
+            raise PreventUpdate
+
+        category_info = db.fetch_one(
+            "SELECT category, budget_type FROM categories WHERE subcategory = ?",
             (subcategory,),
         )
 
-        if category_info:
-            category, budget_type = category_info[0]
+        if not category_info:
+            raise PreventUpdate
 
+        category, budget_type = category_info
+
+        amount_val = float(amount)
+        if is_quorum:
+            amount_usd = amount_val
+            amount_eur = amount_val / 1.08
+        elif currency == "EUR":
+            amount_eur = amount_val
+            amount_usd = amount_val * 1.08
+        else:
+            amount_usd = amount_val
+            amount_eur = amount_val / 1.08
+
+        original_desc = db.fetch_one(
+            "SELECT description FROM transactions WHERE uuid = ?", (uuid,)
+        )
+
+        db.write_execute(
+            """
+            UPDATE transactions
+            SET date = ?,
+                description = ?,
+                amount_usd = ?,
+                amount_eur = ?,
+                subcategory = ?,
+                category = ?,
+                budget_type = ?,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE uuid = ?
+        """,
+            (
+                date,
+                description,
+                amount_usd,
+                amount_eur,
+                subcategory,
+                category,
+                budget_type,
+                uuid,
+            ),
+        )
+
+        categorizer.learn_from_transaction(description, subcategory)
+
+        if "apply" in (apply_mapping or []) and original_desc:
             db.write_execute(
                 """
                 UPDATE transactions
@@ -882,29 +981,11 @@ def save_transaction_edit(
                     category = ?,
                     budget_type = ?,
                     updated_at = CURRENT_TIMESTAMP
-                WHERE uuid = ?
+                WHERE description = ?
+                    AND uuid != ?
             """,
-                (subcategory, category, budget_type, uuid),
+                (subcategory, category, budget_type, original_desc[0], uuid),
             )
-
-            desc = db.fetch_all(
-                "SELECT description FROM transactions WHERE uuid = ?", (uuid,)
-            )[0][0]
-            categorizer.learn_from_transaction(desc, subcategory)
-
-            if "apply" in apply_mapping:
-                db.write_execute(
-                    """
-                    UPDATE transactions
-                    SET subcategory = ?,
-                        category = ?,
-                        budget_type = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE description = ?
-                        AND subcategory != ?
-                """,
-                    (subcategory, category, budget_type, desc, subcategory),
-                )
 
         return False, current_trigger + 1
 
