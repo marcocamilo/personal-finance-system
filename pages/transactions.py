@@ -9,6 +9,7 @@ from datetime import datetime
 
 import dash
 import dash_bootstrap_components as dbc
+import requests
 from dash import ALL, Input, Output, State, callback, ctx, dcc, html
 from dash.exceptions import PreventUpdate
 
@@ -18,6 +19,50 @@ from import_pipeline.categorizer import Categorizer
 dash.register_page(__name__, path="/transactions", title="Transactions")
 
 categorizer = Categorizer()
+
+
+DEFAULT_EUR_USD_RATE = 1.08
+
+
+def get_exchange_rate(
+    date: str, from_currency: str = "USD", to_currency: str = "EUR"
+) -> float:
+    """
+    Fetch exchange rate for a given date from frankfurter.app API.
+    Falls back to default rate if API call fails.
+
+    Args:
+        date: Date string in YYYY-MM-DD format
+        from_currency: Source currency code
+        to_currency: Target currency code
+
+    Returns:
+        Exchange rate as float
+    """
+    try:
+        url = f"https://api.frankfurter.app/{date}"
+        params = {"from": from_currency, "to": to_currency}
+        response = requests.get(url, params=params, timeout=5)
+
+        if response.status_code == 200:
+            data = response.json()
+            if "rates" in data:
+                rate = data["rates"].get(to_currency)
+                if rate:
+                    print(
+                        f"Exchange rate for {date}: 1 {from_currency} = {rate} {to_currency}"
+                    )
+                    return float(rate)
+
+    except Exception as e:
+        print(f"Exchange rate API error: {e}, using fallback rate")
+
+    if from_currency == "USD" and to_currency == "EUR":
+        return 1 / DEFAULT_EUR_USD_RATE
+    elif from_currency == "EUR" and to_currency == "USD":
+        return DEFAULT_EUR_USD_RATE
+
+    return 1.0
 
 
 def layout():
@@ -678,10 +723,14 @@ def save_new_transaction(
     amount_val = float(amount)
     if currency == "EUR":
         amount_eur = amount_val
-        amount_usd = amount_val * 1.08
+
+        eur_to_usd_rate = get_exchange_rate(date, "EUR", "USD")
+        amount_usd = amount_eur * eur_to_usd_rate
     else:
         amount_usd = amount_val
-        amount_eur = amount_val / 1.08
+
+        usd_to_eur_rate = get_exchange_rate(date, "USD", "EUR")
+        amount_eur = amount_usd * usd_to_eur_rate
 
     db.write_execute(
         """
@@ -744,12 +793,7 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
     tx_data = tx.iloc[0]
     is_quorum = tx_data["is_quorum"]
 
-    if is_quorum:
-        currency = "USD"
-        amount = tx_data["amount_usd"]
-    else:
-        currency = "EUR"
-        amount = tx_data["amount_eur"]
+    amount = tx_data["amount_eur"]
 
     suggestions = categorizer.categorize(tx_data["description"], is_quorum)
     suggestion_text = ""
@@ -773,11 +817,11 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
                             value=tx_data["date"],
                         ),
                     ],
-                    width=4,
+                    width=6,
                 ),
                 dbc.Col(
                     [
-                        dbc.Label("Amount"),
+                        dbc.Label("Amount (€)"),
                         dbc.Input(
                             id="edit-tx-amount",
                             type="number",
@@ -785,22 +829,7 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
                             value=round(amount, 2),
                         ),
                     ],
-                    width=4,
-                ),
-                dbc.Col(
-                    [
-                        dbc.Label("Currency"),
-                        dcc.Dropdown(
-                            id="edit-tx-currency",
-                            options=[
-                                {"label": "EUR (€)", "value": "EUR"},
-                                {"label": "USD ($)", "value": "USD"},
-                            ],
-                            value=currency,
-                            clearable=False,
-                        ),
-                    ],
-                    width=4,
+                    width=6,
                 ),
             ],
             className="mb-3",
@@ -859,20 +888,7 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
             ],
             className="mb-3",
         ),
-        html.Div(
-            dbc.Alert(
-                [
-                    html.I(className="bi bi-info-circle me-2"),
-                    "This is a Quorum transaction. Currency cannot be changed.",
-                ],
-                color="info",
-                className="mb-0 py-2",
-            )
-            if is_quorum
-            else html.Div()
-        ),
         dcc.Store(id="edit-uuid", data=uuid),
-        dcc.Store(id="edit-is-quorum", data=is_quorum),
     ]
 
     return True, form
@@ -888,11 +904,9 @@ def toggle_edit_modal(n_clicks, btn_ids, is_open, subcat_options):
         State("edit-uuid", "data"),
         State("edit-tx-date", "value"),
         State("edit-tx-amount", "value"),
-        State("edit-tx-currency", "value"),
         State("edit-tx-description", "value"),
         State("edit-subcategory", "value"),
         State("apply-mapping-checkbox", "value"),
-        State("edit-is-quorum", "data"),
         State("refresh-trigger", "data"),
     ],
     prevent_initial_call=True,
@@ -903,14 +917,12 @@ def save_transaction_edit(
     uuid,
     date,
     amount,
-    currency,
     description,
     subcategory,
     apply_mapping,
-    is_quorum,
     current_trigger,
 ):
-    """Save transaction edits"""
+    """Save transaction edits - always in EUR, converts to USD for data completeness"""
     if not ctx.triggered_id:
         raise PreventUpdate
 
@@ -931,16 +943,9 @@ def save_transaction_edit(
 
         category, budget_type = category_info
 
-        amount_val = float(amount)
-        if is_quorum:
-            amount_usd = amount_val
-            amount_eur = amount_val / 1.08
-        elif currency == "EUR":
-            amount_eur = amount_val
-            amount_usd = amount_val * 1.08
-        else:
-            amount_usd = amount_val
-            amount_eur = amount_val / 1.08
+        amount_eur = float(amount)
+        eur_to_usd_rate = get_exchange_rate(date, "EUR", "USD")
+        amount_usd = amount_eur * eur_to_usd_rate
 
         original_desc = db.fetch_one(
             "SELECT description FROM transactions WHERE uuid = ?", (uuid,)
