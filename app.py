@@ -35,7 +35,23 @@ app.layout = dbc.Container(
                             className="text-muted mb-0",
                         ),
                     ],
-                    width=12,
+                    width=11,
+                ),
+                dbc.Col(
+                    [
+                        html.A(
+                            dbc.Button(
+                                [html.I(className="bi bi-gear")],
+                                color="dark",
+                                outline=True,
+                                size="lg",
+                                className="float-end",
+                            ),
+                            href="/settings",
+                        )
+                    ],
+                    width=1,
+                    className="d-flex align-items-right",
                 )
             ],
             className="mb-4 mt-3",
