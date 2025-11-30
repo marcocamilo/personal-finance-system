@@ -98,6 +98,7 @@ def layout():
         dcc.Store(id="edit-category-store"),
         dcc.Store(id="edit-income-store"),
         dcc.Store(id="edit-merchant-store"),
+        dcc.Store(id="settings-template-edit-data"),
         dcc.Download(id="download-backup"),
 
     ], fluid=True)
@@ -337,6 +338,18 @@ def edit_merchant_mapping_modal():
     ], id="edit-merchant-modal", size="lg", is_open=False)
 
 
+def create_template_editor_modal():
+    """Modal for editing budget templates"""
+    return dbc.Modal([
+        dbc.ModalHeader("Edit Budget Template"),
+        dbc.ModalBody([html.Div(id="settings-template-editor-form")]),
+        dbc.ModalFooter([
+            dbc.Button("Cancel", id="settings-cancel-template-edit", color="secondary", className="me-2"),
+            dbc.Button("Save Changes", id="settings-save-template-edit", color="primary"),
+        ]),
+    ], id="settings-template-editor-modal", size="xl", is_open=False)
+
+
 # Callback to render content based on active tab
 @callback(
     [
@@ -460,22 +473,56 @@ def render_templates_tab():
     else:
         template_cards = []
         for _, tmpl in templates.iterrows():
+            # Get template items count and total budget
+            template_stats = db.fetch_one(
+                """
+                SELECT
+                    COUNT(*) as item_count,
+                    SUM(CASE WHEN budget_type != 'Income' THEN budgeted_amount ELSE 0 END) as total_budget
+                FROM template_categories
+                WHERE template_id = ?
+                """,
+                (tmpl["id"],)
+            )
+
+            item_count = template_stats[0] if template_stats else 0
+            total_budget = template_stats[1] if template_stats and template_stats[1] else 0
+
             status_badge = dbc.Badge(
                 "Active" if tmpl["is_active"] else "Inactive",
                 color="success" if tmpl["is_active"] else "secondary",
             )
+
             template_cards.append(
                 dbc.Col([
                     dbc.Card([
                         dbc.CardBody([
-                            html.H5(tmpl["name"], className="mb-2"),
-                            html.Div([
-                                status_badge,
-                                html.Small(
-                                    f"Created: {tmpl['created_at'][:10]}",
-                                    className="text-muted ms-2",
-                                ),
-                            ]),
+                            dbc.Row([
+                                dbc.Col([
+                                    html.H5(tmpl["name"], className="mb-2"),
+                                    html.Div([
+                                        status_badge,
+                                        html.Small(
+                                            f" • {item_count} categories • €{total_budget:,.2f} total",
+                                            className="text-muted ms-2",
+                                        ),
+                                    ]),
+                                    html.Small(
+                                        f"Created: {tmpl['created_at'][:10]}",
+                                        className="text-muted d-block mt-1",
+                                    ),
+                                ], width=10),
+                                dbc.Col([
+                                    dbc.Button(
+                                        html.I(className="bi bi-pencil"),
+                                        id={"type": "settings-template-edit-btn", "index": tmpl["id"]},
+                                        color="primary",
+                                        size="sm",
+                                        outline=True,
+                                        className="float-end",
+                                    ),
+                                ], width=2, className="text-end"),
+                            ], align="center"),
                         ]),
                     ], className="mb-3"),
                 ], width=4),
@@ -483,14 +530,16 @@ def render_templates_tab():
 
         content = dbc.Row(template_cards)
 
-    return dbc.Card([
-        dbc.CardHeader(html.H5("Budget Templates", className="mb-0")),
-        dbc.CardBody([
-            html.P("View and manage budget templates. To edit template budgets, use the Budget Template Editor page.", className="text-muted mb-3"),
-            content,
-            html.Hr(className="my-4"),
-            html.P("Note: Template editing is available on the Budget page.", className="text-muted small"),
+    return html.Div([
+        dbc.Card([
+            dbc.CardHeader(html.H5("Budget Templates", className="mb-0")),
+            dbc.CardBody([
+                html.P("View and edit budget templates with live balance tracking.", className="text-muted mb-3"),
+                content,
+            ]),
         ]),
+        # Template editor modal
+        create_template_editor_modal(),
     ])
 
 
@@ -1026,6 +1075,460 @@ def delete_merchant_mapping(n_clicks, store_data):
     )
 
     return datetime.now().isoformat()
+
+
+# Template editor callbacks
+def create_settings_template_editor_form(template_name, current_items, available_options, income, total_allocated, remaining, template_id):
+    """Create the template editor form"""
+    return [
+        html.H5(f"Editing Template: {template_name}", className="mb-3"),
+        html.Div(
+            id="settings-template-live-summary",
+            children=[
+                dbc.Alert(
+                    [
+                        dbc.Row([
+                            dbc.Col([
+                                html.Strong("Income: "),
+                                html.Span(f"€{income:,.2f}"),
+                            ], width=3),
+                            dbc.Col([
+                                html.Strong("Allocated: "),
+                                html.Span(f"€{total_allocated:,.2f}"),
+                            ], width=3),
+                            dbc.Col([
+                                html.Strong("Remaining: "),
+                                html.Span(
+                                    f"€{remaining:,.2f}",
+                                    className="text-success" if abs(remaining) < 0.01 else "text-danger",
+                                ),
+                            ], width=3),
+                            dbc.Col([
+                                dbc.Badge(
+                                    "✓ Zero-Based" if abs(remaining) < 0.01 else "⚠ Not Balanced",
+                                    color="success" if abs(remaining) < 0.01 else "warning",
+                                )
+                            ], width=3, className="text-end"),
+                        ])
+                    ],
+                    color="success" if abs(remaining) < 0.01 else "warning",
+                    className="mb-3",
+                )
+            ],
+        ),
+        html.Div([
+            html.H6("Budget Items", className="mb-3"),
+            html.Div(
+                id="settings-template-items-list",
+                children=[
+                    create_settings_template_item_row(item, idx)
+                    for idx, item in enumerate(current_items)
+                ],
+            ),
+        ], className="mb-4", style={"maxHeight": "400px", "overflowY": "auto"}),
+        dbc.Card([
+            dbc.CardBody([
+                html.H6("Add Category", className="mb-3"),
+                dbc.Row([
+                    dbc.Col([
+                        dcc.Dropdown(
+                            id="settings-new-template-category",
+                            options=available_options,
+                            placeholder="Select category to add...",
+                            value=None,
+                        )
+                    ], width=7),
+                    dbc.Col([
+                        dbc.Input(
+                            id="settings-new-template-amount",
+                            type="number",
+                            step=0.01,
+                            placeholder="Amount (€)",
+                            size="sm",
+                            value=None,
+                        )
+                    ], width=4),
+                    dbc.Col([
+                        dbc.Button(
+                            html.I(className="bi bi-plus-circle"),
+                            id="settings-add-template-item-btn",
+                            color="success",
+                            size="sm",
+                            className="w-100",
+                        )
+                    ], width=1),
+                ])
+            ])
+        ], className="mb-3"),
+        dcc.Store(
+            id="settings-template-edit-data",
+            data={"template_id": template_id, "items": current_items},
+        ),
+    ]
+
+
+def create_settings_template_item_row(item, idx):
+    """Create a row for a template item"""
+    type_colors = {
+        "Income": "secondary",
+        "Savings": "success",
+        "Needs": "primary",
+        "Wants": "info",
+        "Unexpected": "warning",
+        "Additional": "dark",
+    }
+
+    return dbc.Card([
+        dbc.CardBody([
+            dbc.Row([
+                dbc.Col([
+                    dbc.Badge(
+                        item["budget_type"],
+                        color=type_colors.get(item["budget_type"], "secondary"),
+                        className="me-2",
+                    ),
+                    html.Span(item["category"], className="fw-bold"),
+                ], width=6),
+                dbc.Col([
+                    dbc.InputGroup([
+                        dbc.InputGroupText("€"),
+                        dbc.Input(
+                            id={"type": "settings-template-amount", "index": idx},
+                            type="number",
+                            step=0.01,
+                            value=item["amount"],
+                            size="sm",
+                        ),
+                    ], size="sm")
+                ], width=5),
+                dbc.Col([
+                    dbc.Button(
+                        html.I(className="bi bi-trash"),
+                        id={"type": "settings-delete-template-item", "index": idx},
+                        color="danger",
+                        size="sm",
+                        outline=True,
+                        disabled=(item["budget_type"] == "Income"),
+                    )
+                ], width=1, className="text-end"),
+            ], align="center")
+        ], className="py-2")
+    ], className="mb-2")
+
+
+@callback(
+    [
+        Output("settings-template-editor-modal", "is_open"),
+        Output("settings-template-editor-form", "children"),
+    ],
+    [
+        Input({"type": "settings-template-edit-btn", "index": dash.ALL}, "n_clicks"),
+        Input("settings-cancel-template-edit", "n_clicks"),
+        Input("settings-save-template-edit", "n_clicks"),
+    ],
+    [
+        State("settings-template-editor-modal", "is_open"),
+    ],
+    prevent_initial_call=True,
+)
+def toggle_settings_template_modal(edit_clicks, cancel_click, save_click, is_open):
+    """Toggle the template editor modal"""
+    # Check if any edit button was actually clicked
+    if not any(edit_clicks or []):
+        # If no edit button clicked, check if cancel/save was clicked
+        if dash.ctx.triggered_id in ["settings-cancel-template-edit", "settings-save-template-edit"]:
+            return False, []
+        return is_open, dash.no_update
+
+    trigger = dash.ctx.triggered_id
+
+    # Check if an edit button was clicked
+    if trigger and isinstance(trigger, dict) and trigger.get("type") == "settings-template-edit-btn":
+        template_id = trigger["index"]
+
+        # Get template data
+        template_info = db.fetch_one(
+            "SELECT name FROM budget_templates WHERE id = ?", (template_id,)
+        )
+        if not template_info:
+            raise PreventUpdate
+
+        template_name = template_info[0]
+
+        # Get template items
+        template_items = db.fetch_df(
+            """
+            SELECT budget_type, category, budgeted_amount
+            FROM template_categories
+            WHERE template_id = ?
+            ORDER BY
+                CASE budget_type
+                    WHEN 'Income' THEN 1
+                    WHEN 'Savings' THEN 2
+                    WHEN 'Needs' THEN 3
+                    WHEN 'Wants' THEN 4
+                    WHEN 'Unexpected' THEN 5
+                    ELSE 6
+                END,
+                category
+            """,
+            (template_id,)
+        )
+
+        current_items = [
+            {
+                "key": f"{row['budget_type']}|{row['category']}",
+                "budget_type": row["budget_type"],
+                "category": row["category"],
+                "amount": float(row["budgeted_amount"]),
+            }
+            for _, row in template_items.iterrows()
+        ]
+
+        # Get available categories
+        all_categories = db.fetch_df("""
+            SELECT DISTINCT budget_type, category
+            FROM categories
+            WHERE is_active = 1
+            ORDER BY budget_type, category
+        """)
+
+        existing_keys = {item["key"] for item in current_items}
+        available_options = [
+            {
+                "label": f"{row['budget_type']} → {row['category']}",
+                "value": f"{row['budget_type']}|{row['category']}",
+            }
+            for _, row in all_categories.iterrows()
+            if f"{row['budget_type']}|{row['category']}" not in existing_keys
+        ]
+
+        # Calculate totals
+        income = sum(item["amount"] for item in current_items if item["budget_type"] == "Income")
+        total_allocated = sum(item["amount"] for item in current_items if item["budget_type"] != "Income")
+        remaining = income - total_allocated
+
+        form = create_settings_template_editor_form(
+            template_name, current_items, available_options, income, total_allocated, remaining, template_id
+        )
+
+        return True, form
+
+    elif trigger in ["settings-cancel-template-edit", "settings-save-template-edit"]:
+        return False, []
+
+    return is_open, dash.no_update
+
+
+@callback(
+    [
+        Output("settings-template-edit-data", "data", allow_duplicate=True),
+        Output("settings-template-live-summary", "children"),
+    ],
+    [Input({"type": "settings-template-amount", "index": dash.ALL}, "value")],
+    [State("settings-template-edit-data", "data")],
+    prevent_initial_call=True,
+)
+def update_settings_template_totals(amounts, template_data):
+    """Update the live summary when amounts change"""
+    if not template_data or not amounts:
+        raise PreventUpdate
+
+    for i, amount in enumerate(amounts):
+        if i < len(template_data["items"]) and amount is not None:
+            template_data["items"][i]["amount"] = float(amount) if amount else 0
+
+    income = sum(
+        item["amount"] for item in template_data["items"] if item["budget_type"] == "Income"
+    )
+    total_allocated = sum(
+        item["amount"] for item in template_data["items"] if item["budget_type"] != "Income"
+    )
+    remaining = income - total_allocated
+
+    summary = dbc.Alert([
+        dbc.Row([
+            dbc.Col([
+                html.Strong("Income: "),
+                html.Span(f"€{income:,.2f}")
+            ], width=3),
+            dbc.Col([
+                html.Strong("Allocated: "),
+                html.Span(f"€{total_allocated:,.2f}"),
+            ], width=3),
+            dbc.Col([
+                html.Strong("Remaining: "),
+                html.Span(
+                    f"€{remaining:,.2f}",
+                    className="text-success" if abs(remaining) < 0.01 else "text-danger",
+                ),
+            ], width=3),
+            dbc.Col([
+                dbc.Badge(
+                    "✓ Zero-Based" if abs(remaining) < 0.01 else "⚠ Not Balanced",
+                    color="success" if abs(remaining) < 0.01 else "warning",
+                )
+            ], width=3, className="text-end"),
+        ])
+    ], color="success" if abs(remaining) < 0.01 else "warning", className="mb-3")
+
+    return template_data, summary
+
+
+@callback(
+    [
+        Output("settings-template-edit-data", "data", allow_duplicate=True),
+        Output("settings-template-items-list", "children"),
+        Output("settings-new-template-category", "options"),
+        Output("settings-new-template-category", "value"),
+        Output("settings-new-template-amount", "value"),
+    ],
+    [Input("settings-add-template-item-btn", "n_clicks")],
+    [
+        State("settings-new-template-category", "value"),
+        State("settings-new-template-amount", "value"),
+        State("settings-template-edit-data", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def add_settings_template_item(n_clicks, new_category, new_amount, template_data):
+    """Add a new item to the template"""
+    if not n_clicks or not template_data or not new_category or not new_amount or new_amount <= 0:
+        raise PreventUpdate
+
+    parts = new_category.split("|")
+    if len(parts) != 2:
+        raise PreventUpdate
+
+    budget_type, cat = parts
+
+    exists = any(
+        item["budget_type"] == budget_type and item["category"] == cat
+        for item in template_data["items"]
+    )
+
+    if not exists:
+        template_data["items"].append({
+            "key": new_category,
+            "budget_type": budget_type,
+            "category": cat,
+            "amount": float(new_amount),
+        })
+
+    all_categories = db.fetch_df("""
+        SELECT DISTINCT budget_type, category
+        FROM categories
+        WHERE is_active = 1
+        ORDER BY budget_type, category
+    """)
+
+    existing_keys = {item["key"] for item in template_data["items"]}
+    available_options = [
+        {
+            "label": f"{row['budget_type']} → {row['category']}",
+            "value": f"{row['budget_type']}|{row['category']}",
+        }
+        for _, row in all_categories.iterrows()
+        if f"{row['budget_type']}|{row['category']}" not in existing_keys
+    ]
+
+    items_list = [
+        create_settings_template_item_row(item, idx)
+        for idx, item in enumerate(template_data["items"])
+    ]
+
+    return template_data, items_list, available_options, None, None
+
+
+@callback(
+    [
+        Output("settings-template-edit-data", "data", allow_duplicate=True),
+        Output("settings-template-items-list", "children", allow_duplicate=True),
+        Output("settings-new-template-category", "options", allow_duplicate=True),
+    ],
+    [Input({"type": "settings-delete-template-item", "index": dash.ALL}, "n_clicks")],
+    [State("settings-template-edit-data", "data")],
+    prevent_initial_call=True,
+)
+def delete_settings_template_item(n_clicks, template_data):
+    """Delete an item from the template"""
+    if not any(n_clicks or []) or not template_data:
+        raise PreventUpdate
+
+    button_id = dash.ctx.triggered_id
+    if not button_id:
+        raise PreventUpdate
+
+    idx = button_id["index"]
+
+    if 0 <= idx < len(template_data["items"]):
+        template_data["items"].pop(idx)
+
+    all_categories = db.fetch_df("""
+        SELECT DISTINCT budget_type, category
+        FROM categories
+        WHERE is_active = 1
+        ORDER BY budget_type, category
+    """)
+
+    existing_keys = {item["key"] for item in template_data["items"]}
+    available_options = [
+        {
+            "label": f"{row['budget_type']} → {row['category']}",
+            "value": f"{row['budget_type']}|{row['category']}",
+        }
+        for _, row in all_categories.iterrows()
+        if f"{row['budget_type']}|{row['category']}" not in existing_keys
+    ]
+
+    items_list = [
+        create_settings_template_item_row(item, idx)
+        for idx, item in enumerate(template_data["items"])
+    ]
+
+    return template_data, items_list, available_options
+
+
+@callback(
+    [
+        Output("settings-template-editor-modal", "is_open", allow_duplicate=True),
+        Output("refresh-trigger", "data", allow_duplicate=True),
+    ],
+    [Input("settings-save-template-edit", "n_clicks")],
+    [
+        State({"type": "settings-template-amount", "index": dash.ALL}, "value"),
+        State("settings-template-edit-data", "data"),
+        State("refresh-trigger", "data"),
+    ],
+    prevent_initial_call=True,
+)
+def save_settings_template(save_click, amounts, template_data, current_refresh):
+    """Save the template changes"""
+    if not save_click or not template_data or not amounts:
+        raise PreventUpdate
+
+    target_template_id = template_data["template_id"]
+
+    # Delete existing template categories
+    db.write_execute(
+        "DELETE FROM template_categories WHERE template_id = ?",
+        (target_template_id,),
+    )
+
+    # Insert updated categories
+    for i, amount in enumerate(amounts):
+        if amount and amount > 0 and i < len(template_data["items"]):
+            item = template_data["items"][i]
+            db.write_execute(
+                """
+                INSERT INTO template_categories
+                (template_id, budget_type, category, subcategory, budgeted_amount)
+                VALUES (?, ?, ?, NULL, ?)
+                """,
+                (target_template_id, item["budget_type"], item["category"], float(amount)),
+            )
+
+    return False, datetime.now().isoformat()
 
 
 # Backup and restore callbacks
