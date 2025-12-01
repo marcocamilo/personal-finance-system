@@ -734,16 +734,18 @@ def save_new_transaction(
 
     db.write_execute(
         """
-        INSERT INTO transactions (
-            uuid, date, description, amount_usd, amount_eur,
-            category, subcategory, budget_type, is_quorum, is_manual,
-            created_at, updated_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """,
+    INSERT INTO transactions (
+        uuid, date, description, original_amount, original_currency,
+        amount_usd, amount_eur, category, subcategory, budget_type, is_quorum, is_manual,
+        created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+    """,
         (
             tx_uuid,
             date,
             description,
+            amount_val,
+            currency,
             amount_usd,
             amount_eur,
             category,

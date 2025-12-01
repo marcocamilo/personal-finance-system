@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS transactions (
     description TEXT NOT NULL,
     
     -- Currency handling
-    original_amount REAL NOT NULL,
+    original_amount REAL,
     original_currency TEXT NOT NULL CHECK(original_currency IN ('EUR', 'USD')),
     amount_eur REAL,
     amount_usd REAL,
